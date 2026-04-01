@@ -135,11 +135,14 @@ export default function Chat({
     return data.choices[0].message.content as string;
   };
 
-  /* ── Build system prompt (injects imported context if present) ── */
+  /* ── Build system prompt (Injects Identity, Background and Context) ── */
   const buildSystemPrompt = () => {
-    const base = character.systemPrompt || `Você é ${character.name}.`;
-    if (!session.importedContext) return base;
-    return `${base}\n\n// MEMÓRIA DE SESSÃO ANTERIOR:\n${session.importedContext}`;
+    const identity = `VOCÊ É: ${character.name.toUpperCase()}\n`;
+    const background = character.description ? `\n// FICHA E BIOMETRIA:\n${character.description}\n` : "";
+    const coreInstructions = `\n// INSTRUÇÕES DE SISTEMA:\n${character.systemPrompt || `Interprete ${character.name} de forma imersiva.`}\n`;
+    const memory = session.importedContext ? `\n// MEMÓRIA DE SESSÃO ANTERIOR:\n${session.importedContext}\n` : "";
+
+    return `${identity}${background}${coreInstructions}${memory}`;
   };
 
   /* ── Send ── */
