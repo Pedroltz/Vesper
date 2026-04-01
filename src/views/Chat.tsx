@@ -1,26 +1,34 @@
 import { useState, useRef, useEffect } from "react";
-import { Character, Settings, Message } from "../types";
+import { invoke } from "@tauri-apps/api/core";
+import { Character, Settings, Message, Session } from "../types";
+import SaveDialog from "../components/SaveDialog";
 import {
-  Send, User, Trash2, Copy, Pencil, X, Check, RotateCcw, Info
+  Send, User, Trash2, Pencil, X, RotateCcw, Info, History, Download, Cpu, Check,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
-/* ── Design tokens ── */
 const T = {
-  bg:       "#0a0a0a",
-  panel:    "#0f0f0f",
-  surface:  "#161616",
-  border:   "#222",
-  accent:   "#d1ff26",
-  text:     "#e0e0e0",
-  sub:      "#666",
-  red:    "#ff4d4d",
+  bg:      "#0a0a0a",
+  panel:   "#0f0f0f",
+  surface: "#161616",
+  border:  "#222",
+  accent:  "#d1ff26",
+  text:    "#e0e0e0",
+  sub:     "#666",
+  faint:   "#333",
+  red:     "#ff4d4d",
 } as const;
 
 interface ChatProps {
   character: Character;
   settings: Settings;
   onEdit: () => void;
+  session: Session;
+  sessions: Session[];
+  onNewSession: () => void;
+  onSelectSession: (s: Session) => void;
+  onDeleteSession: (id: string) => void;
+  onUpdateSession: (id: string, updates: Partial<Session>) => void;
 }
 
 type MsgGroup = { lead: Message; rest: Message[] };
@@ -41,47 +49,82 @@ function groupMessages(messages: Message[]): MsgGroup[] {
   return groups;
 }
 
-export default function Chat({ character, settings, onEdit }: ChatProps) {
+function loadSessionMsgs(sessionId: string): Message[] {
+  try {
+    const raw = localStorage.getItem(`vesper-msgs-${sessionId}`);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function buildExportContent(s: Session, char: Character, msgs: Message[]): string {
+  const sep = "=".repeat(72);
+  const date = new Date(s.createdAt).toLocaleString("pt-BR");
+  const header = [sep, `VESPER RP — ${char.name.toUpperCase()}`, `Sessão: ${s.title}`, `Data: ${date}`, sep].join("\n");
+  const summaryBlock = s.summary ? `\n// RESUMO\n${s.summary}\n\n${sep}` : "";
+  const lines = msgs.length > 0
+    ? msgs.map(m => {
+        const who = m.role === "user" ? "PLAYER_USER" : char.name.toUpperCase();
+        const time = new Date(m.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+        return `[${time}] ${who}:\n${m.content}`;
+      }).join("\n\n---\n\n")
+    : "(sessão sem mensagens)";
+  return `${header}${summaryBlock}\n\n// TRANSCRIÇÃO\n\n${lines}\n\n${sep}\n`;
+}
+
+export default function Chat({
+  character, settings, onEdit,
+  session, sessions, onNewSession, onSelectSession, onDeleteSession, onUpdateSession,
+}: ChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
+  const [showSessions, setShowSessions] = useState(false);
   const [isNarrow, setIsNarrow] = useState(window.innerWidth < 1100);
+  const [generatingFor, setGeneratingFor] = useState<string | null>(null);
+  const [saveDialog, setSaveDialog] = useState<{ filename: string; content: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const skipNextSaveRef = useRef(true);
 
   useEffect(() => {
     const handleResize = () => setIsNarrow(window.innerWidth < 1100);
     window.addEventListener("resize", handleResize);
-    try {
-      const saved = localStorage.getItem(`chat-${character.id}`);
-      setMessages(saved ? JSON.parse(saved) : []);
-    } catch {
-      setMessages([]);
-    }
     return () => window.removeEventListener("resize", handleResize);
-  }, [character.id]);
+  }, []);
 
   useEffect(() => {
-    localStorage.setItem(`chat-${character.id}`, JSON.stringify(messages));
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, character.id]);
+    skipNextSaveRef.current = true;
+    try {
+      const saved = localStorage.getItem(`vesper-msgs-${session.id}`);
+      setMessages(saved ? JSON.parse(saved) : []);
+    } catch { setMessages([]); }
+  }, [session.id]);
 
-  // Auto-grow textarea effect
+  useEffect(() => {
+    if (skipNextSaveRef.current) { skipNextSaveRef.current = false; return; }
+    localStorage.setItem(`vesper-msgs-${session.id}`, JSON.stringify(messages));
+  }, [messages, session.id]);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = "0px";
-      const scrollHeight = textareaRef.current.scrollHeight;
-      textareaRef.current.style.height = scrollHeight + "px";
+      textareaRef.current.style.height = textareaRef.current.scrollHeight + "px";
     }
   }, [input]);
 
+  /* ── API ── */
   const callAPI = async (ctx: { role: string; content: string }[]) => {
     const isGPT = settings.selectedModel.startsWith("gpt");
-    const url = isGPT ? "https://api.openai.com/v1/chat/completions" : "https://api.deepseek.com/v1/chat/completions";
+    const url = isGPT
+      ? "https://api.openai.com/v1/chat/completions"
+      : "https://api.deepseek.com/v1/chat/completions";
     const key = isGPT ? settings.openAIKey : settings.deepSeekKey;
-    if (!key) throw new Error("API Key ausente.");
-
+    if (!key) throw new Error("API Key ausente. Configure nas Configurações.");
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
@@ -92,19 +135,42 @@ export default function Chat({ character, settings, onEdit }: ChatProps) {
     return data.choices[0].message.content as string;
   };
 
+  /* ── Build system prompt (injects imported context if present) ── */
+  const buildSystemPrompt = () => {
+    const base = character.systemPrompt || `Você é ${character.name}.`;
+    if (!session.importedContext) return base;
+    return `${base}\n\n// MEMÓRIA DE SESSÃO ANTERIOR:\n${session.importedContext}`;
+  };
+
+  /* ── Send ── */
   const sendMessage = async (content: string, base: Message[]) => {
     if (!content.trim() || isLoading) return;
-    const userMsg: Message = { id: crypto.randomUUID(), characterId: character.id, role: "user", content, timestamp: Date.now() };
+
+    if (base.filter(m => m.role === "user").length === 0) {
+      const title = content.slice(0, 42) + (content.length > 42 ? "…" : "");
+      onUpdateSession(session.id, { title });
+    }
+
+    const userMsg: Message = {
+      id: crypto.randomUUID(), characterId: character.id,
+      role: "user", content, timestamp: Date.now(),
+    };
     const next = [...base, userMsg];
     setMessages(next);
     setIsLoading(true);
     try {
-      const ctx = [{ role: "system", content: character.systemPrompt || `Você é ${character.name}.` }, ...next.map(m => ({ role: m.role, content: m.content }))];
+      const ctx = [
+        { role: "system", content: buildSystemPrompt() },
+        ...next.map(m => ({ role: m.role, content: m.content })),
+      ];
       const text = await callAPI(ctx);
-      const aiMsg: Message = { id: crypto.randomUUID(), characterId: character.id, role: "assistant", content: text, timestamp: Date.now() };
+      const aiMsg: Message = {
+        id: crypto.randomUUID(), characterId: character.id,
+        role: "assistant", content: text, timestamp: Date.now(),
+      };
       setMessages(prev => [...prev, aiMsg]);
-    } catch (err: any) {
-      alert(err.message);
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Erro desconhecido.");
     } finally {
       setIsLoading(false);
     }
@@ -112,157 +178,683 @@ export default function Chat({ character, settings, onEdit }: ChatProps) {
 
   const handleSend = () => { sendMessage(input, messages); setInput(""); };
 
+  const handleDeleteMsg = (id: string) => {
+    setMessages(prev => prev.filter(m => m.id !== id));
+  };
+
+  const handleRetryMsg = (id: string) => {
+    const idx = messages.findIndex(m => m.id === id);
+    if (idx < 0) return;
+    const base = messages.slice(0, idx);
+    const lastUser = [...base].reverse().find(m => m.role === "user");
+    if (!lastUser) return;
+    const userIdx = base.findIndex(m => m.id === lastUser.id);
+    sendMessage(lastUser.content, base.slice(0, userIdx));
+  };
+
+  const handleEditMsg = (id: string, newContent: string) => {
+    setMessages(prev => prev.map(m => m.id === id ? { ...m, content: newContent } : m));
+  };
+
+  const clearMessages = () => {
+    if (confirm("Apagar todas as mensagens desta sessão?")) setMessages([]);
+  };
+
+  /* ── Generate summary for a session then import as context ── */
+  const handleImportContext = async (targetSession: Session) => {
+    setGeneratingFor(targetSession.id);
+    try {
+      let summary = targetSession.summary;
+
+      if (!summary) {
+        const msgs = loadSessionMsgs(targetSession.id);
+        if (msgs.length === 0) { alert("Sessão vazia — nada para resumir."); return; }
+
+        const transcript = msgs
+          .map(m => `${m.role === "user" ? "Usuário" : character.name}: ${m.content}`)
+          .join("\n\n");
+
+        summary = await callAPI([
+          {
+            role: "system",
+            content: "Você é um assistente de narrativa. Crie resumos concisos de conversas de roleplay.",
+          },
+          {
+            role: "user",
+            content: `Resuma esta conversa de roleplay entre um usuário e o personagem "${character.name}" em 4 a 6 frases objetivas em português. Use passado. Descreva eventos importantes, revelações e desenvolvimentos da relação. Seja conciso.\n\nConversa:\n${transcript}`,
+          },
+        ]);
+
+        // Save summary back to the source session
+        onUpdateSession(targetSession.id, { summary });
+      }
+
+      // Import the summary into the current session
+      onUpdateSession(session.id, { importedContext: summary });
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Erro ao gerar resumo.");
+    } finally {
+      setGeneratingFor(null);
+    }
+  };
+
+  const removeImportedContext = () => onUpdateSession(session.id, { importedContext: undefined });
+
+  const openExportDialog = (s: Session, msgs: Message[]) => {
+    const content = buildExportContent(s, character, msgs);
+    const filename = `vesper_${character.name}_${s.title}.txt`.replace(/[^\w.-]/g, "_");
+    setSaveDialog({ filename, content });
+  };
+
+  const handleSaveFile = async (dir: string, filename: string) => {
+    const savedPath = await invoke<string>("save_text_file", { dir, filename, content: saveDialog!.content });
+    setSaveDialog(null);
+    alert(`Salvo em:\n${savedPath}`);
+  };
+
   const groups = groupMessages(messages);
 
   return (
     <div style={{ height: "100%", display: "flex", background: T.bg, position: "relative", overflow: "hidden" }}>
-      
-      {/* Background Overlay */}
-      <div style={{ position: "absolute", inset: 0, zIndex: 0, opacity: 0.15 }}>
-        {character.wallpaper && <img src={character.wallpaper} className="w-full h-full object-cover grayscale" />}
+
+      {/* Wallpaper */}
+      <div style={{ position: "absolute", inset: 0, zIndex: 0, opacity: 0.25 }}>
+        {character.wallpaper && (
+          <img src={character.wallpaper} style={{ width: "100%", height: "100%", objectFit: "cover", filter: "grayscale(1)" }} />
+        )}
         <div style={{ position: "absolute", inset: 0, background: `linear-gradient(to top, ${T.bg}, transparent)` }} />
       </div>
 
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", position: "relative", zIndex: 1 }}>
-        
+      {/* ── Sessions panel (left) ── */}
+      {showSessions && (
+        <aside style={{
+          width: isNarrow ? "100%" : 288,
+          position: isNarrow ? "absolute" : "relative",
+          left: 0, top: 0, bottom: 0, zIndex: 100,
+          background: T.panel, borderRight: `1px solid ${T.border}`,
+          display: "flex", flexDirection: "column", overflow: "hidden",
+          boxShadow: isNarrow ? "10px 0 40px rgba(0,0,0,0.8)" : "none",
+        }}>
+          <div style={{
+            padding: "20px 20px 16px", borderBottom: `1px solid ${T.border}`,
+            display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+          }}>
+            <div>
+              <p style={{ margin: 0, fontFamily: "monospace", fontSize: 9, color: T.accent, letterSpacing: "0.12em" }}>MEMORY_BANK</p>
+              <p style={{ margin: "5px 0 0", fontSize: 11, color: T.sub, fontFamily: "monospace" }}>
+                {sessions.length} session{sessions.length !== 1 ? "s" : ""}
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <button
+                onClick={onNewSession}
+                style={{
+                  fontFamily: "monospace", fontSize: 9, fontWeight: 900, letterSpacing: "0.06em",
+                  color: T.accent, background: "none", border: `1px solid ${T.accent}`,
+                  padding: "6px 10px", cursor: "pointer",
+                }}
+              >
+                + NEW
+              </button>
+              {isNarrow && (
+                <button onClick={() => setShowSessions(false)} style={{ background: "none", border: "none", color: T.sub, cursor: "pointer", display: "flex", padding: 4 }}>
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            {[...sessions].reverse().map(s => (
+              <SessionItem
+                key={s.id}
+                s={s}
+                active={s.id === session.id}
+                isCurrentSession={s.id === session.id}
+                canDelete={sessions.length > 1}
+                isGenerating={generatingFor === s.id}
+                hasImported={session.importedContext !== undefined && s.id !== session.id}
+                onSelect={() => { onSelectSession(s); if (isNarrow) setShowSessions(false); }}
+                onDelete={() => onDeleteSession(s.id)}
+                onExport={() => openExportDialog(s, loadSessionMsgs(s.id))}
+                onExportCurrent={() => openExportDialog(session, messages)}
+                onImport={() => handleImportContext(s)}
+              />
+            ))}
+          </div>
+        </aside>
+      )}
+
+      {/* ── Main column ── */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", position: "relative", zIndex: 1, minWidth: 0 }}>
+
         {/* Header */}
         <header style={{
           height: 64, display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: isNarrow ? "0 16px" : "0 32px", borderBottom: `1px solid ${T.border}`, background: "rgba(10,10,10,0.8)", backdropFilter: "blur(10px)"
+          padding: isNarrow ? "0 16px" : "0 32px",
+          borderBottom: `1px solid ${T.border}`,
+          background: "rgba(10,10,10,0.85)", backdropFilter: "blur(10px)",
+          flexShrink: 0,
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 34, height: 34, border: `1px solid ${T.border}`, overflow: "hidden", borderRadius: "50%" }}>
-               {character.profilePicture && <img src={character.profilePicture} className="w-full h-full object-cover" />}
+            <div style={{ width: 34, height: 34, border: `1px solid ${T.border}`, overflow: "hidden", borderRadius: "50%", flexShrink: 0 }}>
+              {character.profilePicture && (
+                <img src={character.profilePicture} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              )}
             </div>
             <div>
-               <p style={{ fontWeight: 900, fontSize: 13, letterSpacing: "0.05em", textTransform: "uppercase", margin: 0 }}>{character.name}</p>
-               {!isNarrow && <p style={{ fontSize: 9, color: T.sub, fontFamily: "monospace", margin: 0 }}>// {settings.selectedModel}</p>}
+              <p style={{ fontWeight: 900, fontSize: 13, letterSpacing: "0.05em", textTransform: "uppercase", margin: 0 }}>
+                {character.name}
+              </p>
+              {!isNarrow && (
+                <p style={{ fontSize: 9, color: T.sub, fontFamily: "monospace", margin: 0 }}>
+                  // {session.title}
+                </p>
+              )}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <HeaderBtn onClick={() => sendMessage(messages.slice(-1)[0]?.content || "", messages.slice(0, -1))}><RotateCcw size={14} /></HeaderBtn>
-            <HeaderBtn onClick={onEdit}><Pencil size={14} /></HeaderBtn>
-            <HeaderBtn onClick={() => setShowInfo(!showInfo)} active={showInfo}><Info size={14} /></HeaderBtn>
+
+          <div style={{ display: "flex", gap: 6 }}>
+            <HeaderBtn onClick={clearMessages} title="Limpar sessão"><Trash2 size={14} /></HeaderBtn>
+            <HeaderBtn onClick={onEdit} title="Editar personagem"><Pencil size={14} /></HeaderBtn>
+            <HeaderBtn
+              onClick={() => { setShowSessions(v => !v); setShowInfo(false); }}
+              active={showSessions}
+              title="Sessões / Memórias"
+            >
+              <History size={14} />
+            </HeaderBtn>
+            <HeaderBtn
+              onClick={() => { setShowInfo(v => !v); setShowSessions(false); }}
+              active={showInfo}
+              title="Ficha do personagem"
+            >
+              <Info size={14} />
+            </HeaderBtn>
           </div>
         </header>
 
-        {/* Messages Container */}
+        {/* Messages */}
         <div style={{ flex: 1, overflowY: "auto", padding: isNarrow ? "24px 16px" : "40px 32px" }}>
           <div style={{ maxWidth: 900, margin: "0 auto", display: "flex", flexDirection: "column", gap: 32 }}>
+
+            {/* Imported context indicator */}
+            {session.importedContext && (
+              <div style={{
+                display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12,
+                padding: "14px 18px",
+                border: `1px solid ${T.faint}`,
+                borderLeft: `3px solid ${T.accent}`,
+                background: "rgba(209,255,38,0.03)",
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ margin: "0 0 6px", fontFamily: "monospace", fontSize: 9, color: T.accent, letterSpacing: "0.1em" }}>
+                    // MEMORY_CONTEXT_ACTIVE
+                  </p>
+                  <p style={{ margin: 0, fontSize: 12, color: T.sub, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                    {session.importedContext}
+                  </p>
+                </div>
+                <button
+                  onClick={removeImportedContext}
+                  title="Remover contexto importado"
+                  style={{ background: "none", border: "none", color: T.faint, cursor: "pointer", flexShrink: 0, display: "flex", paddingTop: 2 }}
+                  onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.color = T.red}
+                  onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.color = T.faint}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+
+            {messages.length === 0 && !isLoading && (
+              <div style={{ textAlign: "center", paddingTop: 60 }}>
+                <p style={{ fontFamily: "monospace", fontSize: 10, color: T.faint, letterSpacing: "0.15em" }}>
+                  SESSION_EMPTY — AWAITING_INPUT
+                </p>
+              </div>
+            )}
+
             {groups.map(group => (
-              <MessageGroupRow key={group.lead.id} group={group} character={character} isNarrow={isNarrow} />
+              <MessageGroupRow
+                key={group.lead.id}
+                group={group}
+                character={character}
+                isNarrow={isNarrow}
+                onDelete={handleDeleteMsg}
+                onRetry={handleRetryMsg}
+                onEdit={handleEditMsg}
+              />
             ))}
-            {isLoading && <div style={{ color: T.accent, fontFamily: "monospace", fontSize: 10 }}>RECEIVING_DATA...</div>}
+
+            {isLoading && (
+              <div style={{ color: T.accent, fontFamily: "monospace", fontSize: 10, letterSpacing: "0.1em" }}>
+                RECEIVING_DATA...
+              </div>
+            )}
             <div ref={bottomRef} />
           </div>
         </div>
 
-        {/* Input Area */}
-        <div style={{ padding: isNarrow ? "0 16px 16px" : "0 32px 32px" }}>
+        {/* Input */}
+        <div style={{ padding: isNarrow ? "0 16px 16px" : "0 32px 32px", flexShrink: 0 }}>
           <div style={{ maxWidth: 900, margin: "0 auto", position: "relative" }}>
-             <textarea
-               ref={textareaRef}
-               rows={1}
-               value={input}
-               onChange={e => setInput(e.target.value)}
-               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-               placeholder={isNarrow ? "COMANDO..." : `ENVIAR COMANDO PARA ${character.name.toUpperCase()}...`}
-               style={{
-                 width: "100%", background: T.surface, border: `1px solid ${T.border}`,
-                 padding: "16px 50px 16px 20px", color: "#fff", outline: "none",
-                 fontSize: 14, fontFamily: "monospace", resize: "none",
-                 maxHeight: "30vh", overflowY: "auto",
-                 boxSizing: "border-box", display: "block"
-               }}
-             />
-             <button
-               onClick={handleSend}
-               style={{
-                 position: "absolute", right: 16, bottom: 14,
-                 background: "none", border: "none", color: input.trim() ? T.accent : T.sub, cursor: "pointer"
-               }}
-             >
-               <Send size={18} />
-             </button>
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+              placeholder={isNarrow ? "COMANDO..." : `ENVIAR COMANDO PARA ${character.name.toUpperCase()}...`}
+              style={{
+                width: "100%", background: T.surface, border: `1px solid ${T.border}`,
+                padding: "16px 50px 16px 20px", color: "#fff", outline: "none",
+                fontSize: 14, fontFamily: "monospace", resize: "none",
+                maxHeight: "30vh", overflowY: "auto",
+                boxSizing: "border-box", display: "block",
+              }}
+            />
+            <button
+              onClick={handleSend}
+              style={{
+                position: "absolute", right: 16, bottom: 14,
+                background: "none", border: "none",
+                color: input.trim() ? T.accent : T.sub, cursor: "pointer",
+              }}
+            >
+              <Send size={18} />
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Responsive Info Sidebar */}
+      {/* ── Save dialog ── */}
+      {saveDialog && (
+        <SaveDialog
+          defaultFilename={saveDialog.filename}
+          onSave={handleSaveFile}
+          onClose={() => setSaveDialog(null)}
+        />
+      )}
+
+      {/* ── Info panel (right) ── */}
       {showInfo && (
-        <aside style={{ 
-          width: isNarrow ? "100%" : 360, 
+        <aside style={{
+          width: isNarrow ? "100%" : 360,
           position: isNarrow ? "absolute" : "relative",
           right: 0, top: 0, bottom: 0,
           background: T.panel, padding: 32, overflowY: "auto", zIndex: 100,
           borderLeft: isNarrow ? "none" : `1px solid ${T.border}`,
           boxShadow: isNarrow ? "-20px 0 40px rgba(0,0,0,0.8)" : "none",
-          transition: "transform 0.3s cubic-bezier(0.16, 1, 0.3, 1)"
         }}>
-           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
-              <p style={{ fontFamily: "monospace", fontSize: 10, color: T.accent }}>FILE_DETAILS</p>
-              {isNarrow && <button onClick={() => setShowInfo(false)} style={{ background: "none", border: "none", color: T.sub }}><X size={20} /></button>}
-           </div>
-           
-           <div style={{ position: "relative", height: 220, background: "#000", border: "1px solid #333", marginBottom: 32, borderRadius: "50%", width: 220, margin: "0 auto 32px", overflow: "hidden" }}>
-              {character.profilePicture && <img src={character.profilePicture} className="w-full h-full object-cover" />}
-           </div>
-           
-           <h2 style={{ fontSize: 24, fontWeight: 900, marginBottom: 8, textTransform: "uppercase", textAlign: "center" }}>{character.name}</h2>
-           <div style={{ height: 2, width: 40, background: T.accent, margin: "0 auto 20px" }} />
-           
-           <div className="msg-prose" style={{ fontSize: 14, color: T.sub }}>
-              <ReactMarkdown>{character.description || "NO_BIOMETRIC_DATA"}</ReactMarkdown>
-           </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
+            <p style={{ fontFamily: "monospace", fontSize: 10, color: T.accent }}>FILE_DETAILS</p>
+            {isNarrow && (
+              <button onClick={() => setShowInfo(false)} style={{ background: "none", border: "none", color: T.sub, cursor: "pointer" }}>
+                <X size={20} />
+              </button>
+            )}
+          </div>
+          <div style={{ position: "relative", height: 220, width: 220, background: "#000", border: "1px solid #333", borderRadius: "50%", margin: "0 auto 32px", overflow: "hidden" }}>
+            {character.profilePicture && (
+              <img src={character.profilePicture} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            )}
+          </div>
+          <h2 style={{ fontSize: 24, fontWeight: 900, marginBottom: 8, textTransform: "uppercase", textAlign: "center" }}>{character.name}</h2>
+          <div style={{ height: 2, width: 40, background: T.accent, margin: "0 auto 20px" }} />
+          <div className="msg-prose" style={{ fontSize: 14, color: T.sub }}>
+            <ReactMarkdown>{character.description || "NO_BIOMETRIC_DATA"}</ReactMarkdown>
+          </div>
         </aside>
       )}
     </div>
   );
 }
 
-function MessageGroupRow({ group, character, isNarrow }: { group: MsgGroup; character: Character; isNarrow: boolean }) {
+/* ── Session list item ── */
+function SessionItem({ s, active, isCurrentSession, canDelete, isGenerating, onSelect, onDelete, onExport, onExportCurrent, onImport }: {
+  s: Session;
+  active: boolean;
+  isCurrentSession: boolean;
+  canDelete: boolean;
+  isGenerating: boolean;
+  hasImported: boolean;
+  onSelect: () => void;
+  onDelete: () => void;
+  onExport: () => void;
+  onExportCurrent: () => void;
+  onImport: () => void;
+}) {
+  const [hov, setHov] = useState(false);
+  return (
+    <div
+      onClick={onSelect}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        padding: "14px 16px", cursor: "pointer",
+        borderBottom: `1px solid ${T.border}`,
+        borderLeft: `2px solid ${active ? T.accent : "transparent"}`,
+        background: active ? "rgba(209,255,38,0.04)" : hov ? "rgba(255,255,255,0.02)" : "transparent",
+        transition: "background 0.12s",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+        {/* Text */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 3 }}>
+            <p style={{
+              margin: 0, fontSize: 12, fontWeight: 700,
+              color: active ? T.accent : hov ? T.text : T.sub,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              flex: 1, minWidth: 0,
+            }}>
+              {s.title}
+            </p>
+            {s.summary && (
+              <span style={{ fontSize: 8, fontFamily: "monospace", color: T.accent, flexShrink: 0, letterSpacing: "0.05em" }}>
+                ∑
+              </span>
+            )}
+          </div>
+          <p style={{ margin: 0, fontSize: 9, color: T.faint, fontFamily: "monospace" }}>
+            {new Date(s.createdAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" })}
+            {" · "}
+            {new Date(s.createdAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+          </p>
+        </div>
+
+        {/* Action buttons (on hover) */}
+        {hov && (
+          <div
+            style={{ display: "flex", gap: 3, flexShrink: 0, alignItems: "center" }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Export */}
+            <IconBtn
+              onClick={isCurrentSession ? onExportCurrent : onExport}
+              title="Exportar como .txt"
+              color={T.sub}
+            >
+              <Download size={12} />
+            </IconBtn>
+
+            {/* Import context (only for past sessions) */}
+            {!isCurrentSession && (
+              <IconBtn
+                onClick={onImport}
+                title={isGenerating ? "Gerando resumo..." : s.summary ? "Importar contexto" : "Gerar resumo e importar"}
+                color={isGenerating ? T.accent : T.sub}
+                disabled={isGenerating}
+              >
+                {isGenerating
+                  ? <span style={{ fontFamily: "monospace", fontSize: 9, color: T.accent }}>···</span>
+                  : <Cpu size={12} />
+                }
+              </IconBtn>
+            )}
+
+            {/* Delete */}
+            {canDelete && !isCurrentSession && (
+              <IconBtn onClick={onDelete} title="Excluir sessão" color={T.sub} hoverColor={T.red}>
+                <X size={12} />
+              </IconBtn>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Summary preview (if exists and not hovering) */}
+      {s.summary && !hov && (
+        <p style={{
+          margin: "8px 0 0", fontSize: 10, color: T.faint,
+          lineHeight: 1.5, fontStyle: "italic",
+          display: "-webkit-box", WebkitLineClamp: 2,
+          WebkitBoxOrient: "vertical" as const, overflow: "hidden",
+        }}>
+          {s.summary}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function IconBtn({ children, onClick, title, color, hoverColor, disabled }: {
+  children: React.ReactNode;
+  onClick: () => void;
+  title: string;
+  color: string;
+  hoverColor?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      disabled={disabled}
+      style={{
+        width: 24, height: 24, background: "none", border: `1px solid ${T.border}`,
+        color, cursor: disabled ? "default" : "pointer",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        transition: "color 0.12s, border-color 0.12s",
+      }}
+      onMouseEnter={e => { if (!disabled && hoverColor) (e.currentTarget as HTMLButtonElement).style.color = hoverColor; }}
+      onMouseLeave={e => { if (!disabled && hoverColor) (e.currentTarget as HTMLButtonElement).style.color = color; }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* ── Message group row ── */
+function MessageGroupRow({ group, character, isNarrow, onDelete, onRetry, onEdit }: {
+  group: MsgGroup; character: Character; isNarrow: boolean;
+  onDelete: (id: string) => void;
+  onRetry: (id: string) => void;
+  onEdit: (id: string, content: string) => void;
+}) {
   const isUser = group.lead.role === "user";
   return (
     <div style={{ display: "flex", flexDirection: isUser ? "row-reverse" : "row", gap: isNarrow ? 12 : 20 }}>
       <div style={{
         width: 32, height: 32, background: isUser ? T.accent : T.surface, flexShrink: 0,
-        border: `1px solid ${T.border}`, overflow: "hidden", borderRadius: "50%"
+        border: `1px solid ${T.border}`, overflow: "hidden", borderRadius: "50%",
       }}>
-        {!isUser && character.profilePicture && <img src={character.profilePicture} className="w-full h-full object-cover" />}
-        {isUser && <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#000" }}><User size={16} /></div>}
+        {!isUser && character.profilePicture && (
+          <img src={character.profilePicture} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        )}
+        {isUser && (
+          <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "#000" }}>
+            <User size={16} />
+          </div>
+        )}
       </div>
 
-      <div style={{ flex: 1, maxWidth: isNarrow ? "100%" : "85%", display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start" }}>
+      <div style={{
+        flex: 1, maxWidth: isNarrow ? "100%" : "85%",
+        display: "flex", flexDirection: "column", alignItems: isUser ? "flex-end" : "flex-start",
+      }}>
         <p style={{ fontSize: 9, fontWeight: 900, color: T.sub, marginBottom: 6, letterSpacing: "0.1em" }}>
           {isUser ? "PLAYER_USER" : character.name.toUpperCase()}
         </p>
-
         {[group.lead, ...group.rest].map(msg => (
-          <div key={msg.id} style={{
-            background: isUser ? "none" : T.surface,
-            borderLeft: isUser ? "none" : `2px solid ${T.accent}`,
-            borderRight: isUser ? `2px solid ${T.sub}` : "none",
-            padding: "12px 16px", marginBottom: 2,
-            width: "fit-content"
-          }}>
-            <div className="msg-prose">
-              <ReactMarkdown>{msg.content}</ReactMarkdown>
-            </div>
-          </div>
+          <MsgBubble
+            key={msg.id}
+            msg={msg}
+            isUser={isUser}
+            onDelete={onDelete}
+            onRetry={onRetry}
+            onEdit={onEdit}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function HeaderBtn({ children, onClick, active }: { children: React.ReactNode; onClick: () => void; active?: boolean }) {
+/* ── Individual message bubble ── */
+function MsgBubble({ msg, isUser, onDelete, onRetry, onEdit }: {
+  msg: Message;
+  isUser: boolean;
+  onDelete: (id: string) => void;
+  onRetry: (id: string) => void;
+  onEdit: (id: string, content: string) => void;
+}) {
+  const [hov, setHov] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(msg.content);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (editing && textareaRef.current) {
+      textareaRef.current.style.height = "0px";
+      textareaRef.current.style.height = textareaRef.current.scrollHeight + "px";
+      textareaRef.current.focus();
+    }
+  }, [editing]);
+
+  const commitEdit = () => {
+    if (draft.trim()) onEdit(msg.id, draft.trim());
+    setEditing(false);
+  };
+
+  const cancelEdit = () => {
+    setDraft(msg.content);
+    setEditing(false);
+  };
+
+  return (
+    <div
+      style={{ marginBottom: 2, width: "fit-content", maxWidth: "100%" }}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+    >
+      {editing ? (
+        <div style={{
+          background: T.surface,
+          borderLeft: `2px solid ${T.accent}`,
+          padding: "12px 16px",
+          minWidth: 280,
+        }}>
+          <textarea
+            ref={textareaRef}
+            value={draft}
+            onChange={e => {
+              setDraft(e.target.value);
+              e.currentTarget.style.height = "0px";
+              e.currentTarget.style.height = e.currentTarget.scrollHeight + "px";
+            }}
+            onKeyDown={e => {
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commitEdit(); }
+              if (e.key === "Escape") cancelEdit();
+            }}
+            style={{
+              width: "100%", background: "transparent", border: "none",
+              color: T.text, outline: "none", resize: "none", overflow: "hidden",
+              fontFamily: "inherit", fontSize: 14, lineHeight: 1.7,
+              boxSizing: "border-box", display: "block",
+            }}
+          />
+          <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+            <button
+              onClick={commitEdit}
+              style={{
+                background: T.accent, border: "none", color: "#000",
+                padding: "5px 12px", cursor: "pointer",
+                fontFamily: "monospace", fontSize: 9, fontWeight: 900, letterSpacing: "0.06em",
+                display: "flex", alignItems: "center", gap: 4,
+              }}
+            >
+              <Check size={10} /> SALVAR
+            </button>
+            <button
+              onClick={cancelEdit}
+              style={{
+                background: "none", border: `1px solid ${T.border}`, color: T.sub,
+                padding: "5px 12px", cursor: "pointer",
+                fontFamily: "monospace", fontSize: 9, fontWeight: 900, letterSpacing: "0.06em",
+              }}
+            >
+              CANCELAR
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={{
+          position: "relative",
+          background: isUser ? "none" : hov ? "#1c1c1c" : T.surface,
+          borderLeft: isUser ? "none" : `2px solid ${T.accent}`,
+          borderRight: isUser ? `2px solid ${T.sub}` : "none",
+          padding: "12px 16px",
+          transition: "background 0.12s",
+        }}>
+          <div className="msg-prose">
+            <ReactMarkdown>{msg.content}</ReactMarkdown>
+          </div>
+
+          {/* Action bar — overlaid at bottom-right, only assistant messages */}
+          {!isUser && hov && (
+            <div style={{
+              position: "absolute", bottom: 8, right: 10,
+              display: "flex", gap: 4, zIndex: 5,
+            }}>
+              <MsgActionBtn onClick={() => { setDraft(msg.content); setEditing(true); }} title="Editar mensagem">
+                <Pencil size={11} />
+              </MsgActionBtn>
+              <MsgActionBtn onClick={() => onRetry(msg.id)} title="Refazer resposta">
+                <RotateCcw size={11} />
+              </MsgActionBtn>
+              <MsgActionBtn onClick={() => onDelete(msg.id)} title="Excluir mensagem" danger>
+                <Trash2 size={11} />
+              </MsgActionBtn>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MsgActionBtn({ children, onClick, title, danger }: {
+  children: React.ReactNode;
+  onClick: () => void;
+  title: string;
+  danger?: boolean;
+}) {
+  const [hov, setHov] = useState(false);
   return (
     <button
       onClick={onClick}
+      title={title}
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        height: 26, padding: "0 8px", gap: 5,
+        background: hov ? (danger ? "rgba(255,77,77,0.12)" : "rgba(255,255,255,0.06)") : "rgba(255,255,255,0.03)",
+        border: `1px solid ${hov ? (danger ? T.red : T.sub) : "#3a3a3a"}`,
+        color: hov ? (danger ? T.red : T.text) : "#888",
+        cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+        fontFamily: "monospace", fontSize: 9, fontWeight: 700, letterSpacing: "0.05em",
+        transition: "color 0.1s, border-color 0.1s, background 0.1s",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/* ── Header button ── */
+function HeaderBtn({ children, onClick, active, title }: {
+  children: React.ReactNode; onClick: () => void; active?: boolean; title?: string;
+}) {
+  return (
+    <button
+      onClick={onClick} title={title}
       style={{
         background: active ? T.accent : "none", border: `1px solid ${T.border}`,
         color: active ? "#000" : T.sub, width: 32, height: 32,
-        display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer"
+        display: "flex", alignItems: "center", justifyContent: "center",
+        cursor: "pointer", transition: "0.15s",
       }}
     >
       {children}

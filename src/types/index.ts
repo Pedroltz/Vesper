@@ -20,3 +20,12 @@ export interface Message {
   content: string;
   timestamp: number;
 }
+
+export interface Session {
+  id: string;
+  characterId: string;
+  title: string;
+  createdAt: number;
+  summary?: string;         // AI-generated summary of this session
+  importedContext?: string; // Summary imported from another session
+}

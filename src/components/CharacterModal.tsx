@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Character } from "../types";
-import { X, User, ImagePlus, Sparkles, Trash2 } from "lucide-react";
+import { X, ImagePlus, Trash2 } from "lucide-react";
 
 /* ── Design tokens ── */
 const T = {
@@ -10,6 +10,7 @@ const T = {
   accent:   "#d1ff26",
   text:     "#e0e0e0",
   sub:      "#666",
+  red:      "#ff4d4d",
 } as const;
 
 const DEFAULT_RP_PROMPT = (name: string) =>
@@ -42,8 +43,12 @@ export default function CharacterModal({ initialChar, isEditing, onSave, onDelet
     const final = { ...char };
     if (!final.systemPrompt?.trim()) final.systemPrompt = DEFAULT_RP_PROMPT(final.name!);
     
-    onSave(final); // Salva o personagem
-    onClose();    // Fecha o modal automaticamente
+    try {
+      onSave(final); 
+      onClose();
+    } catch (e) {
+      onClose();
+    }
   };
 
   return (
@@ -150,7 +155,7 @@ function Label({ children }: { children: React.ReactNode }) {
   return <p style={{ fontSize: 10, fontWeight: 900, color: T.sub, marginBottom: 8, letterSpacing: "0.1em" }}>{children}</p>;
 }
 
-function ImageField({ label, src, onChange, landscape }: { label: string; src?: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; landscape?: boolean }) {
+function ImageField({ label, src, onChange }: { label: string; src?: string; onChange: (e: React.ChangeEvent<HTMLInputElement>) => void; landscape?: boolean }) {
   return (
     <label style={{ flex: 1, cursor: "pointer" }}>
       <Label>{label}</Label>

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Settings } from "../types";
-import { Eye, EyeOff, Check, Cpu, Key, Shield } from "lucide-react";
+import { Eye, EyeOff, Check, Cpu, Key } from "lucide-react";
 
 /* ── Design tokens — Editorial Noir ── */
 const T = {

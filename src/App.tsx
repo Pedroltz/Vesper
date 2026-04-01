@@ -1,20 +1,62 @@
 import { useState, useEffect } from "react";
-import { Settings, Character } from "./types";
+import { Settings, Character, Session } from "./types";
 import Chat from "./views/Chat";
 import Config from "./views/Config";
 import CharacterModal from "./components/CharacterModal";
-import { Settings as SettingsIcon, Plus, LayoutGrid, X, Minus, Square, Database, Terminal, Pencil, Trash2, AlertTriangle } from "lucide-react";
+import { Settings as SettingsIcon, Plus, LayoutGrid, X, Minus, Square, Database, Pencil, Trash2, AlertTriangle } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const appWindow = getCurrentWindow();
 
-/* ── Design tokens — Editorial Noir ── */
+/* ── IndexedDB Engine ── */
+const DB_NAME = "VesperDB";
+const STORE_NAME = "characters";
+
+const initDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: "id" });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+const saveCharsToDB = async (chars: Character[]) => {
+  const db = await initDB();
+  const tx = db.transaction(STORE_NAME, "readwrite");
+  const store = tx.objectStore(STORE_NAME);
+  // Clear and rewrite all for simplicity, or handle individual updates
+  await new Promise((resolve) => {
+    const clearReq = store.clear();
+    clearReq.onsuccess = () => {
+      chars.forEach(c => store.add(c));
+      resolve(true);
+    };
+  });
+};
+
+const getCharsFromDB = async (): Promise<Character[]> => {
+  const db = await initDB();
+  const tx = db.transaction(STORE_NAME, "readonly");
+  const store = tx.objectStore(STORE_NAME);
+  return new Promise((resolve) => {
+    const req = store.getAll();
+    req.onsuccess = () => resolve(req.result || []);
+  });
+};
+
+/* ── Design tokens ── */
 export const T = {
   bg:       "#0a0a0a",
   panel:    "#0f0f0f",
   surface:  "#1a1a1a",
   border:   "#2a2a2a",
-  accent:   "#d1ff26", // Acid Yellow
+  accent:   "#d1ff26",
   text:     "#e0e0e0",
   sub:      "#666",
   faint:    "#333",
@@ -31,6 +73,8 @@ export default function App() {
   const [characters, setCharacters] = useState<Character[]>([]);
   const [settings, setSettings] = useState<Settings>({ selectedModel: "gpt-4o" });
   const [modal, setModal] = useState<ModalState>(null);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<ConfirmState>(null);
   const [isNarrow, setIsNarrow] = useState(false);
   const [platform, setPlatform] = useState<string>("windows");
@@ -40,25 +84,26 @@ export default function App() {
     handleResize();
     window.addEventListener("resize", handleResize);
     
-    // Detecção nativa de plataforma via UserAgent (evita erro de plugin faltando)
     const ua = window.navigator.userAgent.toLowerCase();
     if (ua.includes("mac")) setPlatform("macos");
     else if (ua.includes("linux")) setPlatform("linux");
     else setPlatform("windows");
 
-    try {
-      const c = localStorage.getItem("vesper-characters");
-      if (c) setCharacters(JSON.parse(c));
+    // Load initial data
+    const load = async () => {
+      const storedChars = await getCharsFromDB();
+      setCharacters(storedChars);
       const s = localStorage.getItem("vesper-settings");
       if (s) setSettings(JSON.parse(s));
-    } catch (e) {}
+    };
+    load();
     
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  const persistChars = (chars: Character[]) => {
+  const persistChars = async (chars: Character[]) => {
     setCharacters(chars);
-    localStorage.setItem("vesper-characters", JSON.stringify(chars));
+    await saveCharsToDB(chars);
   };
 
   const openCreate = () =>
@@ -76,9 +121,7 @@ export default function App() {
     setModal(null);
   };
 
-  const requestDelete = (char: Character) => {
-    setConfirmDelete({ id: char.id, name: char.name });
-  };
+  const requestDelete = (char: Character) => setConfirmDelete({ id: char.id, name: char.name });
 
   const executeDelete = () => {
     if (!confirmDelete) return;
@@ -92,8 +135,22 @@ export default function App() {
     setModal(null);
   };
 
+  const loadOrCreateSessions = (char: Character): { loaded: Session[]; active: Session } => {
+    const raw = localStorage.getItem(`vesper-sessions-${char.id}`);
+    let loaded: Session[] = raw ? JSON.parse(raw) : [];
+    if (loaded.length === 0) {
+      const first: Session = { id: crypto.randomUUID(), characterId: char.id, title: "Sessão 1", createdAt: Date.now() };
+      loaded = [first];
+      localStorage.setItem(`vesper-sessions-${char.id}`, JSON.stringify(loaded));
+    }
+    return { loaded, active: loaded[loaded.length - 1] };
+  };
+
   const selectChar = (char: Character) => {
+    const { loaded, active } = loadOrCreateSessions(char);
+    setSessions(loaded);
     setSelectedChar(char);
+    setSelectedSession(active);
     setView("chat");
   };
 
@@ -102,130 +159,55 @@ export default function App() {
       display: "flex", flexDirection: "column", height: "100vh", background: T.bg, color: T.text,
       fontFamily: "'Inter', sans-serif", letterSpacing: "-0.01em", overflow: "hidden"
     }}>
-      
       <TitleBar platform={platform} />
-
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        
-        {/* ══ Industrial Sidebar ══ */}
-        <aside style={{
-          width: 72, background: T.panel, borderRight: `1px solid ${T.border}`,
-          display: "flex", flexDirection: "column", alignItems: "center", padding: "24px 0", zIndex: 100,
-          position: "relative"
-        }}>
+        <aside style={{ width: 72, background: T.panel, borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", alignItems: "center", padding: "24px 0", zIndex: 100, position: "relative" }}>
           <div style={{ marginBottom: 40, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
-            <div style={{
-              width: 36, height: 36, background: "#000", border: `1px solid ${T.accent}`, color: T.accent,
-              display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900,
-              fontSize: 20, borderRadius: 2, boxShadow: `0 0 10px rgba(209, 255, 38, 0.2)`
-            }}>V</div>
+            <div style={{ width: 36, height: 36, background: "#000", border: `1px solid ${T.accent}`, color: T.accent, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 20, borderRadius: 2, boxShadow: `0 0 10px rgba(209, 255, 38, 0.2)` }}>V</div>
             <div style={{ width: 4, height: 4, borderRadius: "50%", background: T.accent, boxShadow: `0 0 8px ${T.accent}` }} />
           </div>
-
           <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 24, zIndex: 2 }}>
             <SidebarIcon icon={<LayoutGrid size={20} />} active={view === "gallery"} onClick={() => setView("gallery")} label="INDEX" />
             <SidebarIcon icon={<Plus size={20} />} active={false} onClick={openCreate} label="NEW" />
             <SidebarIcon icon={<SettingsIcon size={20} />} active={view === "settings"} onClick={() => setView("settings")} label="CONF" />
           </div>
-
-          <div style={{ 
-            padding: "20px 0", borderTop: `1px solid ${T.border}`, 
-            display: "flex", flexDirection: "column", gap: 14, width: "100%", alignItems: "center",
-            background: "rgba(0,0,0,0.2)"
-          }}>
+          <div style={{ padding: "20px 0", borderTop: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 14, width: "100%", alignItems: "center", background: "rgba(0,0,0,0.2)" }}>
             <Database size={12} color={T.faint} />
             {characters.slice(0, 5).map(c => (
-              <div
-                key={c.id}
-                onClick={() => selectChar(c)}
-                title={c.name}
-                style={{
-                  width: 34, height: 34, overflow: "hidden", cursor: "pointer",
-                  border: `1px solid ${selectedChar?.id === c.id ? T.accent : T.border}`,
-                  padding: 2, background: "#000", position: "relative",
-                  transition: "0.2s transform"
-                }}
-                className="hover:scale-110"
-              >
-                <div style={{ width: "100%", height: "100%", background: "#111", overflow: "hidden" }}>
-                  {c.profilePicture ? (
-                    <img src={c.profilePicture} style={{ width: "100%", height: "100%", objectFit: "cover", opacity: selectedChar?.id === c.id ? 1 : 0.5 }} />
-                  ) : (
-                    <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 900, color: T.sub }}>
-                      {c.name[0]}
-                    </div>
-                  )}
+              <div key={c.id} onClick={() => selectChar(c)} title={c.name} style={{ width: 34, height: 34, overflow: "hidden", cursor: "pointer", border: `1px solid ${selectedChar?.id === c.id ? T.accent : T.border}`, padding: 2, background: "#000", position: "relative", transition: "0.2s" }} className="hover:scale-110">
+                <div style={{ width: "100%", height: "100%", background: "#111", overflow: "hidden", borderRadius: "50%" }}>
+                  {c.profilePicture ? <img src={c.profilePicture} style={{ width: "100%", height: "100%", objectFit: "cover", opacity: selectedChar?.id === c.id ? 1 : 0.5 }} /> : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: 900, color: T.sub }}>{c.name[0]}</div>}
                 </div>
-                {selectedChar?.id === c.id && <div style={{ position: "absolute", bottom: 0, right: 0, width: 6, height: 6, background: T.accent }} />}
+                {selectedChar?.id === c.id && <div style={{ position: "absolute", bottom: 0, right: 0, width: 6, height: 6, background: T.accent, borderRadius: "50%" }} />}
               </div>
             ))}
           </div>
         </aside>
-
         <main style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           {view === "settings" ? (
-            <Config settings={settings} onSaveSettings={s => {
-              setSettings(s);
-              localStorage.setItem("vesper-settings", JSON.stringify(s));
-            }} />
-          ) : view === "chat" && selectedChar ? (
-            <Chat character={selectedChar} settings={settings} onEdit={() => openEdit(selectedChar)} />
+            <Config settings={settings} onSaveSettings={s => { setSettings(s); localStorage.setItem("vesper-settings", JSON.stringify(s)); }} />
+          ) : view === "chat" && selectedChar && selectedSession ? (
+            <Chat character={selectedChar} settings={settings} onEdit={() => openEdit(selectedChar)} session={selectedSession} sessions={sessions} onNewSession={() => {}} onSelectSession={s => setSelectedSession(s)} onDeleteSession={() => {}} onUpdateSession={() => {}} />
           ) : (
-            <GalleryView 
-              characters={characters} 
-              onSelect={selectChar} 
-              onOpenCreate={openCreate} 
-              onEdit={openEdit} 
-              onDelete={requestDelete} 
-              isNarrow={isNarrow} 
-            />
+            <GalleryView characters={characters} onSelect={selectChar} onOpenCreate={openCreate} onEdit={openEdit} onDelete={requestDelete} isNarrow={isNarrow} />
           )}
         </main>
       </div>
-
-      {/* Character Modal */}
-      {modal && (
-        <CharacterModal
-          initialChar={modal.char}
-          isEditing={modal.isEditing}
-          onSave={handleSaveChar}
-          onDelete={modal.isEditing ? () => requestDelete(modal.char as Character) : undefined}
-          onClose={() => setModal(null)}
-        />
-      )}
-
-      {/* Vesper Custom Confirm Delete Modal */}
-      {confirmDelete && (
-        <ConfirmModal 
-          name={confirmDelete.name} 
-          onCancel={() => setConfirmDelete(null)} 
-          onConfirm={executeDelete} 
-        />
-      )}
+      {modal && <CharacterModal initialChar={modal.char} isEditing={modal.isEditing} onSave={handleSaveChar} onDelete={modal.isEditing ? () => requestDelete(modal.char as Character) : undefined} onClose={() => setModal(null)} />}
+      {confirmDelete && <ConfirmModal name={confirmDelete.name} onCancel={() => setConfirmDelete(null)} onConfirm={executeDelete} />}
     </div>
   );
 }
 
 function TitleBar({ platform }: { platform: string }) {
   const isMac = platform === "macos";
-  
   return (
-    <div style={{ 
-      height: 32, background: "#000", display: "flex", 
-      flexDirection: isMac ? "row-reverse" : "row",
-      justifyContent: "space-between", alignItems: "center", 
-      borderBottom: `1px solid ${T.border}`, userSelect: "none", position: "relative", zIndex: 1000 
-    }}>
+    <div style={{ height: 32, background: "#000", display: "flex", flexDirection: isMac ? "row-reverse" : "row", justifyContent: "space-between", alignItems: "center", borderBottom: `1px solid ${T.border}`, userSelect: "none", position: "relative", zIndex: 1000 }}>
       <div data-tauri-drag-region style={{ position: "absolute", inset: 0, zIndex: -1 }} />
-      
-      <div style={{ 
-        padding: isMac ? "0 12px 0 0" : "0 0 0 12px", 
-        display: "flex", alignItems: "center", gap: 8, pointerEvents: "none" 
-      }}>
+      <div style={{ padding: isMac ? "0 12px 0 0" : "0 0 0 12px", display: "flex", alignItems: "center", gap: 8, pointerEvents: "none" }}>
         <div style={{ width: 6, height: 6, background: T.accent }} />
         <span style={{ fontSize: 10, fontWeight: 900, color: T.sub, letterSpacing: "0.1em", fontFamily: "monospace" }}>VESPER_OS_CORE</span>
       </div>
-      
       <div style={{ display: "flex", height: "100%", flexDirection: isMac ? "row-reverse" : "row" }}>
         <WindowBtn onClick={() => appWindow.minimize()}><Minus size={14} /></WindowBtn>
         <WindowBtn onClick={() => appWindow.toggleMaximize()}><Square size={12} /></WindowBtn>
@@ -237,52 +219,22 @@ function TitleBar({ platform }: { platform: string }) {
 
 function WindowBtn({ children, onClick, hoverBg }: any) {
   const [hov, setHov] = useState(false);
-  return (
-    <button onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)} onClick={onClick} style={{ width: 44, height: "100%", background: hov ? (hoverBg || T.surface) : "none", border: "none", color: hov ? "#fff" : T.sub, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "0.2s" }}>
-      {children}
-    </button>
-  );
+  return <button onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)} onClick={onClick} style={{ width: 44, height: "100%", background: hov ? (hoverBg || T.surface) : "none", border: "none", color: hov ? "#fff" : T.sub, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", transition: "0.2s" }}>{children}</button>;
 }
 
 function SidebarIcon({ icon, active, onClick, label }: any) {
-  const [hov, setHov] = useState(false);
-  return (
-    <button 
-      onMouseEnter={() => setHov(true)} 
-      onMouseLeave={() => setHov(false)} 
-      onClick={onClick} 
-      style={{ 
-        width: 44, height: 44, borderRadius: 2, border: active ? `1px solid ${T.accent}` : "1px solid transparent", 
-        cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", 
-        background: active ? "rgba(209, 255, 38, 0.05)" : "none", color: active ? T.accent : (hov ? "#fff" : T.sub), 
-        transition: "0.2s", gap: 2, position: "relative"
-      }}
-    >
-      {icon}
-      <span style={{ fontSize: 7, fontWeight: 900, fontFamily: "monospace" }}>{label}</span>
-    </button>
-  );
+  return <button onClick={onClick} style={{ width: 44, height: 44, borderRadius: 2, border: active ? `1px solid ${T.accent}` : "1px solid transparent", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: active ? "rgba(209, 255, 38, 0.05)" : "none", color: active ? T.accent : T.sub, transition: "0.2s", gap: 2, position: "relative" }}>{icon}<span style={{ fontSize: 7, fontWeight: 900, fontFamily: "monospace" }}>{label}</span></button>;
 }
 
 function ConfirmModal({ name, onCancel, onConfirm }: { name: string, onCancel: () => void, onConfirm: () => void }) {
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
       <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.95)", backdropFilter: "blur(8px)" }} onClick={onCancel} />
-      <div className="slide-up" style={{
-        position: "relative", width: "100%", maxWidth: 400, background: "#000", border: `1px solid ${T.red}`, padding: 32,
-        display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center"
-      }}>
+      <div className="slide-up" style={{ position: "relative", width: "100%", maxWidth: 400, background: "#000", border: `1px solid ${T.red}`, padding: 32, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center" }}>
         <AlertTriangle size={48} color={T.red} style={{ marginBottom: 20 }} />
-        <h2 style={{ fontSize: 14, fontWeight: 900, color: "#fff", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>
-          PERMANENT_DELETE_WARNING
-        </h2>
-        <p style={{ fontSize: 13, color: T.sub, lineHeight: 1.6, marginBottom: 32 }}>
-          Você está prestes a excluir permanentemente os dados de <span style={{ color: "#fff", fontWeight: 700 }}>{name.toUpperCase()}</span>. Esta ação não pode ser desfeita.
-        </p>
-        <div style={{ display: "flex", width: "100%", gap: 12 }}>
-          <button onClick={onCancel} style={{ flex: 1, background: "none", border: `1px solid ${T.sub}`, color: T.sub, padding: "12px 0", cursor: "pointer", fontSize: 11, fontWeight: 900 }}>ABORT_ACTION</button>
-          <button onClick={onConfirm} style={{ flex: 1, background: T.red, border: "none", color: "#fff", padding: "12px 0", cursor: "pointer", fontSize: 11, fontWeight: 900 }}>CONFIRM_ERASE</button>
-        </div>
+        <h2 style={{ fontSize: 14, fontWeight: 900, color: "#fff", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>PERMANENT_DELETE_WARNING</h2>
+        <p style={{ fontSize: 13, color: T.sub, lineHeight: 1.6, marginBottom: 32 }}>Você está prestes a excluir permanentemente os dados de <span style={{ color: "#fff", fontWeight: 700 }}>{name.toUpperCase()}</span>. Esta ação não pode ser desfeita.</p>
+        <div style={{ display: "flex", width: "100%", gap: 12 }}><button onClick={onCancel} style={{ flex: 1, background: "none", border: `1px solid ${T.sub}`, color: T.sub, padding: "12px 0", cursor: "pointer", fontSize: 11, fontWeight: 900 }}>ABORT_ACTION</button><button onClick={onConfirm} style={{ flex: 1, background: T.red, border: "none", color: "#fff", padding: "12px 0", cursor: "pointer", fontSize: 11, fontWeight: 900 }}>CONFIRM_ERASE</button></div>
       </div>
     </div>
   );
@@ -297,7 +249,7 @@ function GalleryView({ characters, onSelect, onOpenCreate, onEdit, onDelete, isN
            <div style={{ height: 1, flex: 1, background: T.border, marginBottom: isNarrow ? 8 : 12 }} />
         </div>
         <div style={{ display: "grid", gridTemplateColumns: isNarrow ? "repeat(auto-fill, minmax(280px, 1fr))" : "repeat(auto-fill, minmax(320px, 1fr))", gap: isNarrow ? "32px 24px" : "60px 40px" }}>
-          {characters.map((c, i) => (
+          {characters.map((c: Character, i: number) => (
             <DossierCard key={c.id} char={c} index={(i + 1).toString().padStart(2, '0')} onClick={() => onSelect(c)} onEdit={() => onEdit(c)} onDelete={() => onDelete(c)} />
           ))}
           <div onClick={onOpenCreate} className="hover-glitch" style={{ height: 480, border: `1px dashed ${T.border}`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", color: T.faint }}>
