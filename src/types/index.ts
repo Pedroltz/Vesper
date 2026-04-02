@@ -28,4 +28,5 @@ export interface Session {
   createdAt: number;
   summary?: string;         // AI-generated summary of this session
   importedContext?: string; // Summary imported from another session
+  scenario?: string;        // Initial scenario/context set at session start
 }

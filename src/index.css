@@ -35,17 +35,58 @@ body::before {
 
 /* ── Markdown Editorial ── */
 .msg-prose {
-  line-height: 1.6;
+  line-height: 1.7;
   font-size: 1rem;
 }
+/* Ação / Narração — itálico em destaque */
 .msg-prose em {
-  color: var(--accent);
+  color: #c8c8c8;
   font-style: italic;
-  font-family: serif;
-  background: rgba(209, 255, 38, 0.05);
-  padding: 0 4px;
+  font-family: Georgia, serif;
 }
-.msg-prose strong { color: #fff; font-weight: 700; border-bottom: 1px solid #333; }
+/* Fala — negrito branco */
+.msg-prose strong { color: #fff; font-weight: 600; }
+/* Pensamento — blockquote estilizado */
+.msg-prose blockquote {
+  margin: 6px 0;
+  padding: 6px 14px;
+  border-left: 2px solid #444;
+  color: #777;
+  font-style: italic;
+  font-size: 0.92em;
+}
+.msg-prose blockquote p { margin: 0; }
+.msg-prose p { margin: 0 0 6px; }
+.msg-prose p:last-child { margin-bottom: 0; }
+
+/* ── Noir Slider ── */
+.noir-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 2px;
+  background: #2a2a2a;
+  outline: none;
+  cursor: pointer;
+}
+.noir-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  cursor: pointer;
+  border: none;
+  border-radius: 0;
+}
+.noir-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  cursor: pointer;
+  border: none;
+  border-radius: 0;
+}
 
 /* ── Custom Scrollbar (Brutalist) ── */
 ::-webkit-scrollbar { width: 4px; }

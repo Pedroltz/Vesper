@@ -83,6 +83,8 @@ export default function Chat({
   const [isNarrow, setIsNarrow] = useState(window.innerWidth < 1100);
   const [generatingFor, setGeneratingFor] = useState<string | null>(null);
   const [saveDialog, setSaveDialog] = useState<{ filename: string; content: string } | null>(null);
+  const [scenarioDismissed, setScenarioDismissed] = useState(false);
+  const [responseLength, setResponseLength] = useState(600);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const skipNextSaveRef = useRef(true);
@@ -95,6 +97,7 @@ export default function Chat({
 
   useEffect(() => {
     skipNextSaveRef.current = true;
+    setScenarioDismissed(false);
     try {
       const saved = localStorage.getItem(`vesper-msgs-${session.id}`);
       setMessages(saved ? JSON.parse(saved) : []);
@@ -118,17 +121,19 @@ export default function Chat({
   }, [input]);
 
   /* ── API ── */
-  const callAPI = async (ctx: { role: string; content: string }[]) => {
+  const callAPI = async (ctx: { role: string; content: string }[], maxTokens?: number) => {
     const isGPT = settings.selectedModel.startsWith("gpt");
     const url = isGPT
       ? "https://api.openai.com/v1/chat/completions"
       : "https://api.deepseek.com/v1/chat/completions";
     const key = isGPT ? settings.openAIKey : settings.deepSeekKey;
     if (!key) throw new Error("API Key ausente. Configure nas Configurações.");
+    const body: Record<string, unknown> = { model: settings.selectedModel, messages: ctx };
+    if (maxTokens) body.max_tokens = maxTokens;
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model: settings.selectedModel, messages: ctx }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error.message);
@@ -140,9 +145,11 @@ export default function Chat({
     const identity = `VOCÊ É: ${character.name.toUpperCase()}\n`;
     const background = character.description ? `\n// FICHA E BIOMETRIA:\n${character.description}\n` : "";
     const coreInstructions = `\n// INSTRUÇÕES DE SISTEMA:\n${character.systemPrompt || `Interprete ${character.name} de forma imersiva.`}\n`;
+    const formatting = `\n// FORMATAÇÃO OBRIGATÓRIA (markdown):\n- Ações e narração: *texto em itálico*\n- Pensamentos internos: > texto em bloco\n- Fala direta: "texto entre aspas"\nCombine os formatos naturalmente. Nunca escreva tudo em texto plano.\n`;
+    const scenario = session.scenario ? `\n// CENÁRIO DESTA SESSÃO:\n${session.scenario}\n` : "";
     const memory = session.importedContext ? `\n// MEMÓRIA DE SESSÃO ANTERIOR:\n${session.importedContext}\n` : "";
 
-    return `${identity}${background}${coreInstructions}${memory}`;
+    return `${identity}${background}${coreInstructions}${formatting}${scenario}${memory}`;
   };
 
   /* ── Send ── */
@@ -166,7 +173,7 @@ export default function Chat({
         { role: "system", content: buildSystemPrompt() },
         ...next.map(m => ({ role: m.role, content: m.content })),
       ];
-      const text = await callAPI(ctx);
+      const text = await callAPI(ctx, responseLength);
       const aiMsg: Message = {
         id: crypto.randomUUID(), characterId: character.id,
         role: "assistant", content: text, timestamp: Date.now(),
@@ -381,6 +388,43 @@ export default function Chat({
         <div style={{ flex: 1, overflowY: "auto", padding: isNarrow ? "24px 16px" : "40px 32px" }}>
           <div style={{ maxWidth: 900, margin: "0 auto", display: "flex", flexDirection: "column", gap: 32 }}>
 
+            {/* Scenario indicator (when set) */}
+            {session.scenario && (
+              <div style={{
+                display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12,
+                padding: "14px 18px",
+                border: `1px solid ${T.faint}`,
+                borderLeft: `3px solid #888`,
+                background: "rgba(255,255,255,0.02)",
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ margin: "0 0 6px", fontFamily: "monospace", fontSize: 9, color: "#888", letterSpacing: "0.1em" }}>
+                    // CENÁRIO_ATIVO
+                  </p>
+                  <p style={{ margin: 0, fontSize: 12, color: T.sub, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                    {session.scenario}
+                  </p>
+                </div>
+                <button
+                  onClick={() => onUpdateSession(session.id, { scenario: undefined })}
+                  title="Remover cenário"
+                  style={{ background: "none", border: "none", color: T.faint, cursor: "pointer", flexShrink: 0, display: "flex", paddingTop: 2 }}
+                  onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.color = T.red}
+                  onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.color = T.faint}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+
+            {/* Scenario prompt (only for empty sessions without scenario) */}
+            {messages.length === 0 && !session.scenario && !scenarioDismissed && (
+              <ScenarioPrompt
+                onSet={text => onUpdateSession(session.id, { scenario: text })}
+                onDismiss={() => setScenarioDismissed(true)}
+              />
+            )}
+
             {/* Imported context indicator */}
             {session.importedContext && (
               <div style={{
@@ -410,8 +454,8 @@ export default function Chat({
               </div>
             )}
 
-            {messages.length === 0 && !isLoading && (
-              <div style={{ textAlign: "center", paddingTop: 60 }}>
+            {messages.length === 0 && !isLoading && (session.scenario || scenarioDismissed) && (
+              <div style={{ textAlign: "center", paddingTop: 40 }}>
                 <p style={{ fontFamily: "monospace", fontSize: 10, color: T.faint, letterSpacing: "0.15em" }}>
                   SESSION_EMPTY — AWAITING_INPUT
                 </p>
@@ -498,6 +542,30 @@ export default function Chat({
               </button>
             )}
           </div>
+
+          {/* Response length slider */}
+          <div style={{ marginBottom: 32, padding: "16px 20px", border: `1px solid ${T.border}`, background: "rgba(255,255,255,0.01)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
+              <p style={{ margin: 0, fontFamily: "monospace", fontSize: 9, color: T.sub, letterSpacing: "0.1em" }}>TAMANHO_RESPOSTA</p>
+              <p style={{ margin: 0, fontFamily: "monospace", fontSize: 10, color: T.accent, fontWeight: 700 }}>
+                {responseLength <= 250 ? "CURTO" : responseLength <= 600 ? "MÉDIO" : responseLength <= 1000 ? "LONGO" : "EXTENSO"}
+              </p>
+            </div>
+            <input
+              type="range"
+              className="noir-slider"
+              min={100}
+              max={1500}
+              step={50}
+              value={responseLength}
+              onChange={e => setResponseLength(Number(e.target.value))}
+            />
+            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
+              {["CURTO", "MÉDIO", "LONGO", "EXTENSO"].map(label => (
+                <span key={label} style={{ fontFamily: "monospace", fontSize: 8, color: T.faint, letterSpacing: "0.05em" }}>{label}</span>
+              ))}
+            </div>
+          </div>
           <div style={{ position: "relative", height: 220, width: 220, background: "#000", border: "1px solid #333", borderRadius: "50%", margin: "0 auto 32px", overflow: "hidden" }}>
             {character.profilePicture && (
               <img src={character.profilePicture} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
@@ -510,6 +578,75 @@ export default function Chat({
           </div>
         </aside>
       )}
+    </div>
+  );
+}
+
+/* ── Scenario prompt (shown on empty sessions) ── */
+function ScenarioPrompt({ onSet, onDismiss }: {
+  onSet: (text: string) => void;
+  onDismiss: () => void;
+}) {
+  const [text, setText] = useState("");
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => { taRef.current?.focus(); }, []);
+
+  const handleSet = () => {
+    if (text.trim()) onSet(text.trim());
+    else onDismiss();
+  };
+
+  return (
+    <div style={{
+      border: `1px solid ${T.border}`,
+      borderLeft: `3px solid #555`,
+      background: "rgba(255,255,255,0.02)",
+      padding: "20px 24px",
+    }}>
+      <p style={{ margin: "0 0 4px", fontFamily: "monospace", fontSize: 9, color: "#666", letterSpacing: "0.12em" }}>
+        // CENÁRIO_INICIAL — OPCIONAL
+      </p>
+      <p style={{ margin: "0 0 16px", fontSize: 12, color: T.sub, lineHeight: 1.5 }}>
+        Defina o cenário desta sessão — onde estão, o que aconteceu antes, o tom da cena.
+      </p>
+      <textarea
+        ref={taRef}
+        value={text}
+        onChange={e => setText(e.target.value)}
+        onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSet(); } }}
+        placeholder="Ex: É uma noite chuvosa em Neo-Tokyo. Vocês se encontram num bar clandestino..."
+        rows={3}
+        style={{
+          width: "100%", background: T.surface, border: `1px solid ${T.border}`,
+          color: T.text, outline: "none", resize: "none",
+          fontFamily: "inherit", fontSize: 13, lineHeight: 1.6,
+          padding: "10px 14px", boxSizing: "border-box", display: "block",
+          marginBottom: 12,
+        }}
+      />
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <button
+          onClick={handleSet}
+          style={{
+            background: T.accent, border: "none", color: "#000",
+            padding: "7px 18px", cursor: "pointer",
+            fontFamily: "monospace", fontSize: 9, fontWeight: 900, letterSpacing: "0.08em",
+          }}
+        >
+          DEFINIR_CENÁRIO
+        </button>
+        <button
+          onClick={onDismiss}
+          style={{
+            background: "none", border: "none", color: T.sub,
+            padding: "7px 10px", cursor: "pointer",
+            fontFamily: "monospace", fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
+          }}
+        >
+          PULAR →
+        </button>
+      </div>
     </div>
   );
 }

@@ -154,6 +154,35 @@ export default function App() {
     setView("chat");
   };
 
+  const handleNewSession = () => {
+    if (!selectedChar) return;
+    const newSession: Session = {
+      id: crypto.randomUUID(),
+      characterId: selectedChar.id,
+      title: `Sessão ${sessions.length + 1}`,
+      createdAt: Date.now(),
+    };
+    const updated = [...sessions, newSession];
+    setSessions(updated);
+    localStorage.setItem(`vesper-sessions-${selectedChar.id}`, JSON.stringify(updated));
+    setSelectedSession(newSession);
+  };
+
+  const handleDeleteSession = (id: string) => {
+    if (!selectedChar || sessions.length <= 1) return;
+    const updated = sessions.filter(s => s.id !== id);
+    setSessions(updated);
+    localStorage.setItem(`vesper-sessions-${selectedChar.id}`, JSON.stringify(updated));
+    if (selectedSession?.id === id) setSelectedSession(updated[updated.length - 1]);
+  };
+
+  const handleUpdateSession = (id: string, updates: Partial<Session>) => {
+    const updated = sessions.map(s => s.id === id ? { ...s, ...updates } : s);
+    setSessions(updated);
+    if (selectedChar) localStorage.setItem(`vesper-sessions-${selectedChar.id}`, JSON.stringify(updated));
+    if (selectedSession?.id === id) setSelectedSession(prev => prev ? { ...prev, ...updates } : prev);
+  };
+
   return (
     <div style={{
       display: "flex", flexDirection: "column", height: "100vh", background: T.bg, color: T.text,
@@ -187,7 +216,7 @@ export default function App() {
           {view === "settings" ? (
             <Config settings={settings} onSaveSettings={s => { setSettings(s); localStorage.setItem("vesper-settings", JSON.stringify(s)); }} />
           ) : view === "chat" && selectedChar && selectedSession ? (
-            <Chat character={selectedChar} settings={settings} onEdit={() => openEdit(selectedChar)} session={selectedSession} sessions={sessions} onNewSession={() => {}} onSelectSession={s => setSelectedSession(s)} onDeleteSession={() => {}} onUpdateSession={() => {}} />
+            <Chat character={selectedChar} settings={settings} onEdit={() => openEdit(selectedChar)} session={selectedSession} sessions={sessions} onNewSession={handleNewSession} onSelectSession={s => setSelectedSession(s)} onDeleteSession={handleDeleteSession} onUpdateSession={handleUpdateSession} />
           ) : (
             <GalleryView characters={characters} onSelect={selectChar} onOpenCreate={openCreate} onEdit={openEdit} onDelete={requestDelete} isNarrow={isNarrow} />
           )}
