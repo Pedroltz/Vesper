@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Settings } from "../types";
-import { Eye, EyeOff, Check, Cpu, Key } from "lucide-react";
+import { Eye, EyeOff, Check, Cpu, Key, Info } from "lucide-react";
 
 /* ── Design tokens — Editorial Noir ── */
 const T = {
@@ -17,7 +17,10 @@ interface ConfigProps {
   onSaveSettings: (settings: Settings) => void;
 }
 
+type Tab = "config" | "about";
+
 export default function Config({ settings, onSaveSettings }: ConfigProps) {
+  const [tab, setTab] = useState<Tab>("config");
   const [openAIKey, setOpenAIKey] = useState(settings.openAIKey ?? "");
   const [deepSeekKey, setDeepSeekKey] = useState(settings.deepSeekKey ?? "");
   const [model, setModel] = useState(settings.selectedModel);
@@ -35,9 +38,9 @@ export default function Config({ settings, onSaveSettings }: ConfigProps) {
   return (
     <div style={{ height: "100%", overflowY: "auto", background: T.bg, padding: "80px 60px" }}>
       <div style={{ maxWidth: 800, margin: "0 auto" }} className="slide-up">
-        
+
         {/* Header */}
-        <header style={{ marginBottom: 60, display: "flex", alignItems: "flex-end", gap: 20 }}>
+        <header style={{ marginBottom: 48, display: "flex", alignItems: "flex-end", gap: 20 }}>
           <h1 style={{ fontSize: "4rem", fontWeight: 900, color: "#fff", lineHeight: 0.8, letterSpacing: "-0.04em", margin: 0 }}>
             CONFIG
           </h1>
@@ -48,66 +51,129 @@ export default function Config({ settings, onSaveSettings }: ConfigProps) {
           </div>
         </header>
 
-        <form onSubmit={handleSave} style={{ display: "flex", flexDirection: "column", gap: 48 }}>
-          
-          {/* API Keys */}
-          <section>
-            <SectionLabel icon={<Key size={14} />}>ACCESS_KEYS</SectionLabel>
-            <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-              <KeyInput 
-                label="OPENAI_API_KEY"
-                value={openAIKey}
-                show={showOpenAI}
-                onChange={setOpenAIKey}
-                onToggle={() => setShowOpenAI(!showOpenAI)}
-              />
-              <KeyInput 
-                label="DEEPSEEK_API_KEY"
-                value={deepSeekKey}
-                show={showDeepSeek}
-                onChange={setDeepSeekKey}
-                onToggle={() => setShowDeepSeek(!showDeepSeek)}
-              />
-            </div>
-          </section>
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 0, marginBottom: 48, borderBottom: `1px solid ${T.border}` }}>
+          {([
+            { id: "config", label: "SISTEMA", icon: <Cpu size={11} /> },
+            { id: "about",  label: "SOBRE",   icon: <Info size={11} /> },
+          ] as { id: Tab; label: string; icon: React.ReactNode }[]).map(t => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              style={{
+                background: "none", border: "none", borderBottom: `2px solid ${tab === t.id ? T.accent : "transparent"}`,
+                color: tab === t.id ? T.accent : T.sub, padding: "10px 24px", cursor: "pointer",
+                fontFamily: "monospace", fontSize: 10, fontWeight: 900, letterSpacing: "0.12em",
+                display: "flex", alignItems: "center", gap: 7, marginBottom: -1, transition: "color 0.15s",
+              }}
+            >
+              {t.icon} {t.label}
+            </button>
+          ))}
+        </div>
 
-          {/* Model Selection */}
-          <section>
-            <SectionLabel icon={<Cpu size={14} />}>PROCESSOR_MODEL</SectionLabel>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-              {MODELS.map(m => (
-                <div 
-                  key={m.id}
-                  onClick={() => setModel(m.id as any)}
-                  style={{
-                    padding: 16, border: `1px solid ${model === m.id ? T.accent : T.border}`,
-                    background: model === m.id ? "rgba(209, 255, 38, 0.05)" : T.surface,
-                    cursor: "pointer", transition: "0.2s", position: "relative"
-                  }}
-                >
-                  <p style={{ fontSize: 12, fontWeight: 900, color: model === m.id ? T.accent : "#fff", marginBottom: 4 }}>{m.name}</p>
-                  <p style={{ fontSize: 10, color: T.sub, lineHeight: 1.4 }}>{m.desc}</p>
-                  {model === m.id && <div style={{ position: "absolute", top: 0, right: 0, width: 4, height: 4, background: T.accent }} />}
-                </div>
-              ))}
-            </div>
-          </section>
+        {/* Tab: Config */}
+        {tab === "config" && (
+          <form onSubmit={handleSave} style={{ display: "flex", flexDirection: "column", gap: 48 }}>
+            <section>
+              <SectionLabel icon={<Key size={14} />}>ACCESS_KEYS</SectionLabel>
+              <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+                <KeyInput
+                  label="OPENAI_API_KEY"
+                  value={openAIKey}
+                  show={showOpenAI}
+                  onChange={setOpenAIKey}
+                  onToggle={() => setShowOpenAI(!showOpenAI)}
+                />
+                <KeyInput
+                  label="DEEPSEEK_API_KEY"
+                  value={deepSeekKey}
+                  show={showDeepSeek}
+                  onChange={setDeepSeekKey}
+                  onToggle={() => setShowDeepSeek(!showDeepSeek)}
+                />
+              </div>
+            </section>
 
-          {/* Save Button */}
-          <button
-            type="submit"
-            style={{
-              width: "100%", height: 54, background: saved ? "none" : T.accent,
-              border: `1px solid ${saved ? "#3ba55d" : T.accent}`,
-              color: saved ? "#3ba55d" : "#000",
-              fontWeight: 900, fontSize: 12, letterSpacing: "0.2em",
-              cursor: "pointer", transition: "0.3s",
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 10
-            }}
-          >
-            {saved ? <><Check size={16} /> SYSTEM_UPDATED</> : "COMMIT_CONFIG_CHANGES"}
-          </button>
-        </form>
+            <section>
+              <SectionLabel icon={<Cpu size={14} />}>PROCESSOR_MODEL</SectionLabel>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                {MODELS.map(m => (
+                  <div
+                    key={m.id}
+                    onClick={() => setModel(m.id as any)}
+                    style={{
+                      padding: 16, border: `1px solid ${model === m.id ? T.accent : T.border}`,
+                      background: model === m.id ? "rgba(209, 255, 38, 0.05)" : T.surface,
+                      cursor: "pointer", transition: "0.2s", position: "relative",
+                    }}
+                  >
+                    <p style={{ fontSize: 12, fontWeight: 900, color: model === m.id ? T.accent : "#fff", marginBottom: 4 }}>{m.name}</p>
+                    <p style={{ fontSize: 10, color: T.sub, lineHeight: 1.4 }}>{m.desc}</p>
+                    {model === m.id && <div style={{ position: "absolute", top: 0, right: 0, width: 4, height: 4, background: T.accent }} />}
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <button
+              type="submit"
+              style={{
+                width: "100%", height: 54, background: saved ? "none" : T.accent,
+                border: `1px solid ${saved ? "#3ba55d" : T.accent}`,
+                color: saved ? "#3ba55d" : "#000",
+                fontWeight: 900, fontSize: 12, letterSpacing: "0.2em",
+                cursor: "pointer", transition: "0.3s",
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 10,
+              }}
+            >
+              {saved ? <><Check size={16} /> SYSTEM_UPDATED</> : "COMMIT_CONFIG_CHANGES"}
+            </button>
+          </form>
+        )}
+
+        {/* Tab: About */}
+        {tab === "about" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
+
+            {/* App identity */}
+            <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
+              <div style={{
+                width: 64, height: 64, background: "#000",
+                border: `1px solid ${T.accent}`, display: "flex",
+                alignItems: "center", justifyContent: "center",
+                fontWeight: 900, fontSize: 32, color: T.accent,
+                boxShadow: `0 0 20px rgba(209,255,38,0.15)`,
+              }}>V</div>
+              <div>
+                <h2 style={{ margin: 0, fontSize: 28, fontWeight: 900, letterSpacing: "-0.03em" }}>Vesper</h2>
+                <p style={{ margin: "4px 0 0", fontFamily: "monospace", fontSize: 10, color: T.sub }}>v0.2.1 — NOIR_ROLEPLAY_ENGINE</p>
+              </div>
+            </div>
+
+            <div style={{ height: 1, background: T.border }} />
+
+            {/* Info rows */}
+            {[
+              { label: "AUTHOR",    value: "Pedroltz" },
+              { label: "VERSION",   value: "0.2.1" },
+              { label: "RUNTIME",   value: "Tauri 2 + React 19" },
+              { label: "LANGUAGE",  value: "TypeScript + Rust" },
+              { label: "RENDERER",  value: "WebView2 (Chromium)" },
+              { label: "STORAGE",   value: "localStorage — WebView2 Profile" },
+              { label: "LICENSE",   value: "Private" },
+            ].map(row => (
+              <div key={row.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", borderBottom: `1px solid ${T.border}`, paddingBottom: 14 }}>
+                <p style={{ margin: 0, fontFamily: "monospace", fontSize: 9, color: T.sub, letterSpacing: "0.12em" }}>{row.label}</p>
+                <p style={{ margin: 0, fontSize: 13, fontWeight: 700, color: T.text }}>{row.value}</p>
+              </div>
+            ))}
+
+            <p style={{ margin: 0, fontFamily: "monospace", fontSize: 9, color: "#333", letterSpacing: "0.08em", textAlign: "center", paddingTop: 8 }}>
+              // VESPER_OS_CORE — ALL RIGHTS RESERVED
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );
