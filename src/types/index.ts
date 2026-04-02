@@ -16,7 +16,7 @@ export interface Settings {
 export interface Message {
   id: string;
   characterId: string;
-  role: "user" | "assistant" | "system";
+  role: "user" | "assistant" | "system" | "director";
   content: string;
   timestamp: number;
 }

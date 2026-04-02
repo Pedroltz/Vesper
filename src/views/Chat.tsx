@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Character, Settings, Message, Session } from "../types";
 import SaveDialog from "../components/SaveDialog";
 import {
-  Send, User, Trash2, Pencil, X, RotateCcw, Info, History, Download, Cpu, Check,
+  Send, User, Trash2, Pencil, X, RotateCcw, Info, History, Download, Cpu, Check, Wand2,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
@@ -85,6 +85,8 @@ export default function Chat({
   const [saveDialog, setSaveDialog] = useState<{ filename: string; content: string } | null>(null);
   const [scenarioDismissed, setScenarioDismissed] = useState(false);
   const [responseLength, setResponseLength] = useState(600);
+  const [directorMode, setDirectorMode] = useState(false);
+  const DIR_COLOR = "#a78bfa";
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const skipNextSaveRef = useRef(true);
@@ -171,7 +173,11 @@ export default function Chat({
     try {
       const ctx = [
         { role: "system", content: buildSystemPrompt() },
-        ...next.map(m => ({ role: m.role, content: m.content })),
+        ...next.map(m =>
+          m.role === "director"
+            ? { role: "system", content: `[INSTRUÇÃO DO DIRETOR]: ${m.content}` }
+            : { role: m.role, content: m.content }
+        ),
       ];
       const text = await callAPI(ctx, responseLength);
       const aiMsg: Message = {
@@ -186,7 +192,43 @@ export default function Chat({
     }
   };
 
-  const handleSend = () => { sendMessage(input, messages); setInput(""); };
+  /* ── Director mode: inject system instruction, saved as "director" role ── */
+  const sendDirectorMsg = async (content: string) => {
+    if (!content.trim() || isLoading) return;
+    const dirMsg: Message = {
+      id: crypto.randomUUID(), characterId: character.id,
+      role: "director", content, timestamp: Date.now(),
+    };
+    const next = [...messages, dirMsg];
+    setMessages(next);
+    setIsLoading(true);
+    try {
+      const ctx = [
+        { role: "system", content: buildSystemPrompt() },
+        ...next.map(m =>
+          m.role === "director"
+            ? { role: "system", content: `[INSTRUÇÃO DO DIRETOR]: ${m.content}` }
+            : { role: m.role, content: m.content }
+        ),
+      ];
+      const text = await callAPI(ctx, responseLength);
+      const aiMsg: Message = {
+        id: crypto.randomUUID(), characterId: character.id,
+        role: "assistant", content: text, timestamp: Date.now(),
+      };
+      setMessages(prev => [...prev, aiMsg]);
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Erro desconhecido.");
+    } finally {
+      setIsLoading(false);
+      setDirectorMode(false);
+    }
+  };
+
+  const handleSend = () => {
+    if (directorMode) { sendDirectorMsg(input); } else { sendMessage(input, messages); }
+    setInput("");
+  };
 
   const handleDeleteMsg = (id: string) => {
     setMessages(prev => prev.filter(m => m.id !== id));
@@ -262,7 +304,19 @@ export default function Chat({
     alert(`Salvo em:\n${savedPath}`);
   };
 
-  const groups = groupMessages(messages);
+  // Split messages: director messages render inline, others grouped
+  type ChatItem = { type: "group"; group: MsgGroup } | { type: "director"; msg: Message };
+  const chatItems: ChatItem[] = [];
+  const pending: Message[] = [];
+  for (const msg of messages) {
+    if (msg.role === "director") {
+      if (pending.length) { groupMessages(pending).forEach(g => chatItems.push({ type: "group", group: g })); pending.length = 0; }
+      chatItems.push({ type: "director", msg });
+    } else {
+      pending.push(msg);
+    }
+  }
+  if (pending.length) groupMessages(pending).forEach(g => chatItems.push({ type: "group", group: g }));
 
   return (
     <div style={{ height: "100%", display: "flex", background: T.bg, position: "relative", overflow: "hidden" }}>
@@ -462,17 +516,19 @@ export default function Chat({
               </div>
             )}
 
-            {groups.map(group => (
-              <MessageGroupRow
-                key={group.lead.id}
-                group={group}
-                character={character}
-                isNarrow={isNarrow}
-                onDelete={handleDeleteMsg}
-                onRetry={handleRetryMsg}
-                onEdit={handleEditMsg}
-              />
-            ))}
+            {chatItems.map(item =>
+              item.type === "director"
+                ? <DirectorEntry key={item.msg.id} msg={item.msg} onDelete={handleDeleteMsg} />
+                : <MessageGroupRow
+                    key={item.group.lead.id}
+                    group={item.group}
+                    character={character}
+                    isNarrow={isNarrow}
+                    onDelete={handleDeleteMsg}
+                    onRetry={handleRetryMsg}
+                    onEdit={handleEditMsg}
+                  />
+            )}
 
             {isLoading && (
               <div style={{ color: T.accent, fontFamily: "monospace", fontSize: 10, letterSpacing: "0.1em" }}>
@@ -485,32 +541,80 @@ export default function Chat({
 
         {/* Input */}
         <div style={{ padding: isNarrow ? "0 16px 16px" : "0 32px 32px", flexShrink: 0 }}>
-          <div style={{ maxWidth: 900, margin: "0 auto", position: "relative" }}>
-            <textarea
-              ref={textareaRef}
-              rows={1}
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-              placeholder={isNarrow ? "COMANDO..." : `ENVIAR COMANDO PARA ${character.name.toUpperCase()}...`}
-              style={{
-                width: "100%", background: T.surface, border: `1px solid ${T.border}`,
-                padding: "16px 50px 16px 20px", color: "#fff", outline: "none",
-                fontSize: 14, fontFamily: "monospace", resize: "none",
-                maxHeight: "30vh", overflowY: "auto",
-                boxSizing: "border-box", display: "block",
-              }}
-            />
-            <button
-              onClick={handleSend}
-              style={{
-                position: "absolute", right: 16, bottom: 14,
-                background: "none", border: "none",
-                color: input.trim() ? T.accent : T.sub, cursor: "pointer",
-              }}
-            >
-              <Send size={18} />
-            </button>
+          <div style={{ maxWidth: 900, margin: "0 auto" }}>
+
+            {/* Director mode label */}
+            {directorMode && (
+              <div style={{
+                display: "flex", alignItems: "center", gap: 8,
+                marginBottom: 6, padding: "5px 10px",
+                border: `1px solid ${DIR_COLOR}22`,
+                background: `${DIR_COLOR}08`,
+              }}>
+                <Wand2 size={10} color={DIR_COLOR} />
+                <span style={{ fontFamily: "monospace", fontSize: 9, color: DIR_COLOR, letterSpacing: "0.1em" }}>
+                  MODO_DIRETOR — instrução invisível ao personagem
+                </span>
+                <button
+                  onClick={() => setDirectorMode(false)}
+                  style={{ marginLeft: "auto", background: "none", border: "none", color: DIR_COLOR, cursor: "pointer", display: "flex", opacity: 0.6 }}
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            )}
+
+            <div style={{ position: "relative" }}>
+              <textarea
+                ref={textareaRef}
+                rows={1}
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
+                  if (e.key === "Control") { e.preventDefault(); setDirectorMode(v => !v); }
+                }}
+                placeholder={directorMode ? "Instrução ao personagem — não registrada no chat..." : isNarrow ? "COMANDO..." : `ENVIAR COMANDO PARA ${character.name.toUpperCase()}...`}
+                style={{
+                  width: "100%", background: T.surface,
+                  border: `1px solid ${directorMode ? DIR_COLOR : T.border}`,
+                  padding: "16px 84px 16px 20px", color: "#fff", outline: "none",
+                  fontSize: 14, fontFamily: directorMode ? "monospace" : "inherit", resize: "none",
+                  maxHeight: "30vh", overflowY: "auto",
+                  boxSizing: "border-box", display: "block",
+                  transition: "border-color 0.2s",
+                }}
+              />
+
+              {/* Director toggle */}
+              <button
+                onClick={() => setDirectorMode(v => !v)}
+                title="Modo Diretor — instrução silenciosa"
+                style={{
+                  position: "absolute", right: 46, bottom: 13,
+                  background: "none", border: "none", cursor: "pointer",
+                  color: directorMode ? DIR_COLOR : T.faint,
+                  transition: "color 0.15s",
+                }}
+                onMouseEnter={e => { if (!directorMode) (e.currentTarget as HTMLButtonElement).style.color = DIR_COLOR; }}
+                onMouseLeave={e => { if (!directorMode) (e.currentTarget as HTMLButtonElement).style.color = T.faint; }}
+              >
+                <Wand2 size={16} />
+              </button>
+
+              {/* Send */}
+              <button
+                onClick={handleSend}
+                style={{
+                  position: "absolute", right: 16, bottom: 14,
+                  background: "none", border: "none", cursor: "pointer",
+                  color: input.trim() ? (directorMode ? DIR_COLOR : T.accent) : T.sub,
+                  transition: "color 0.15s",
+                }}
+              >
+                <Send size={18} />
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -578,6 +682,50 @@ export default function Chat({
           </div>
         </aside>
       )}
+    </div>
+  );
+}
+
+/* ── Director entry (collapsed by default) ── */
+const DIR_ENTRY_COLOR = "#a78bfa";
+function DirectorEntry({ msg, onDelete }: { msg: Message; onDelete: (id: string) => void }) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <div style={{ display: "flex", alignItems: "flex-start", gap: 8, opacity: 0.7 }}>
+      <div style={{ flex: 1, border: `1px solid ${DIR_ENTRY_COLOR}22`, background: `${DIR_ENTRY_COLOR}06` }}>
+        <button
+          onClick={() => setExpanded(v => !v)}
+          style={{
+            width: "100%", background: "none", border: "none", cursor: "pointer",
+            display: "flex", alignItems: "center", gap: 8,
+            padding: "7px 12px", color: DIR_ENTRY_COLOR,
+          }}
+        >
+          <Wand2 size={10} />
+          <span style={{ fontFamily: "monospace", fontSize: 9, letterSpacing: "0.1em", flex: 1, textAlign: "left" }}>
+            // DIRETOR
+          </span>
+          <span style={{ fontFamily: "monospace", fontSize: 9, color: `${DIR_ENTRY_COLOR}88` }}>
+            {expanded ? "▲" : "▼"}
+          </span>
+        </button>
+        {expanded && (
+          <div style={{ padding: "0 12px 10px", borderTop: `1px solid ${DIR_ENTRY_COLOR}22` }}>
+            <p style={{ margin: "8px 0 0", fontSize: 12, color: "#ccc", lineHeight: 1.6, whiteSpace: "pre-wrap", fontFamily: "monospace" }}>
+              {msg.content}
+            </p>
+          </div>
+        )}
+      </div>
+      <button
+        onClick={() => onDelete(msg.id)}
+        title="Remover instrução"
+        style={{ background: "none", border: "none", color: T.faint, cursor: "pointer", paddingTop: 7, flexShrink: 0 }}
+        onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.color = T.red}
+        onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.color = T.faint}
+      >
+        <X size={12} />
+      </button>
     </div>
   );
 }
