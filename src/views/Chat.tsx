@@ -148,10 +148,18 @@ export default function Chat({
     const background = character.description ? `\n// FICHA E BIOMETRIA:\n${character.description}\n` : "";
     const coreInstructions = `\n// INSTRUÇÕES DE SISTEMA:\n${character.systemPrompt || `Interprete ${character.name} de forma imersiva.`}\n`;
     const formatting = `\n// FORMATAÇÃO OBRIGATÓRIA (markdown):\n- Ações e narração: *texto em itálico*\n- Pensamentos internos: > texto em bloco\n- Fala direta: "texto entre aspas"\nCombine os formatos naturalmente. Nunca escreva tudo em texto plano.\n`;
+
+    const lengthLabel =
+      responseLength <= 250 ? "muito curta (2 a 3 parágrafos pequenos no máximo)" :
+      responseLength <= 600 ? "moderada (3 a 5 parágrafos)" :
+      responseLength <= 1000 ? "detalhada (vários parágrafos)" :
+      "extensa e elaborada (sem limitação de tamanho)";
+    const lengthGuide = `\n// TAMANHO DA RESPOSTA:\nEscreva respostas de tamanho ${lengthLabel}. Sempre termine suas frases e cenas de forma completa — nunca corte no meio. Adapte a profundidade da narrativa ao tamanho permitido.\n`;
+
     const scenario = session.scenario ? `\n// CENÁRIO DESTA SESSÃO:\n${session.scenario}\n` : "";
     const memory = session.importedContext ? `\n// MEMÓRIA DE SESSÃO ANTERIOR:\n${session.importedContext}\n` : "";
 
-    return `${identity}${background}${coreInstructions}${formatting}${scenario}${memory}`;
+    return `${identity}${background}${coreInstructions}${formatting}${lengthGuide}${scenario}${memory}`;
   };
 
   /* ── Send ── */
@@ -235,13 +243,18 @@ export default function Chat({
   };
 
   const handleRetryMsg = (id: string) => {
-    const idx = messages.findIndex(m => m.id === id);
-    if (idx < 0) return;
-    const base = messages.slice(0, idx);
-    const lastUser = [...base].reverse().find(m => m.role === "user");
-    if (!lastUser) return;
-    const userIdx = base.findIndex(m => m.id === lastUser.id);
-    sendMessage(lastUser.content, base.slice(0, userIdx));
+    setMessages(current => {
+      const idx = current.findIndex(m => m.id === id);
+      if (idx < 0) return current;
+      const base = current.slice(0, idx);
+      const lastUser = [...base].reverse().find(m => m.role === "user");
+      if (!lastUser) return current;
+      const userIdx = base.findIndex(m => m.id === lastUser.id);
+      const newBase = base.slice(0, userIdx);
+      // Kick off the API call after state settles
+      setTimeout(() => sendMessage(lastUser.content, newBase), 0);
+      return newBase;
+    });
   };
 
   const handleEditMsg = (id: string, newContent: string) => {
@@ -1013,7 +1026,7 @@ function MsgBubble({ msg, isUser, onDelete, onRetry, onEdit }: {
 
   return (
     <div
-      style={{ marginBottom: 2, width: "fit-content", maxWidth: "100%" }}
+      style={{ marginBottom: 2, maxWidth: "100%" }}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
     >
@@ -1080,11 +1093,10 @@ function MsgBubble({ msg, isUser, onDelete, onRetry, onEdit }: {
             <ReactMarkdown>{msg.content}</ReactMarkdown>
           </div>
 
-          {/* Action bar — overlaid at bottom-right, only assistant messages */}
+          {/* Action bar — inline at bottom-right, only assistant messages */}
           {!isUser && hov && (
             <div style={{
-              position: "absolute", bottom: 8, right: 10,
-              display: "flex", gap: 4, zIndex: 5,
+              display: "flex", justifyContent: "flex-end", gap: 4, marginTop: 8,
             }}>
               <MsgActionBtn onClick={() => { setDraft(msg.content); setEditing(true); }} title="Editar mensagem">
                 <Pencil size={11} />

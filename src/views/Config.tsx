@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Settings } from "../types";
 import { Eye, EyeOff, Check, Cpu, Key, Info } from "lucide-react";
 import vesperIcon from "../assets/vesper-icon.png";
+import { version } from "../../package.json";
 
 /* ── Design tokens — Editorial Noir ── */
 const T = {
@@ -149,7 +150,7 @@ export default function Config({ settings, onSaveSettings }: ConfigProps) {
               </div>
               <div>
                 <h2 style={{ margin: 0, fontSize: 28, fontWeight: 900, letterSpacing: "-0.03em" }}>Vesper</h2>
-                <p style={{ margin: "4px 0 0", fontFamily: "monospace", fontSize: 10, color: T.sub }}>v0.2.1 — NOIR_ROLEPLAY_ENGINE</p>
+                <p style={{ margin: "4px 0 0", fontFamily: "monospace", fontSize: 10, color: T.sub }}>v{version} — NOIR_ROLEPLAY_ENGINE</p>
               </div>
             </div>
 
@@ -158,7 +159,7 @@ export default function Config({ settings, onSaveSettings }: ConfigProps) {
             {/* Info rows */}
             {[
               { label: "AUTHOR",    value: "Pedroltz" },
-              { label: "VERSION",   value: "0.2.1" },
+              { label: "VERSION",   value: version },
               { label: "RUNTIME",   value: "Tauri 2 + React 19" },
               { label: "LANGUAGE",  value: "TypeScript + Rust" },
               { label: "RENDERER",  value: "WebView2 (Chromium)" },
