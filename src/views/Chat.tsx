@@ -574,12 +574,12 @@ export default function Chat({
                   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
                   if (e.key === "Control") { e.preventDefault(); setDirectorMode(v => !v); }
                 }}
-                placeholder={directorMode ? "Instrução ao personagem — não registrada no chat..." : isNarrow ? "COMANDO..." : `ENVIAR COMANDO PARA ${character.name.toUpperCase()}...`}
+                placeholder={directorMode ? "Instrução ao personagem — não registrada no chat..." : isNarrow ? "Comando..." : `Enviar comando para ${character.name}...`}
                 style={{
                   width: "100%", background: T.surface,
                   border: `1px solid ${directorMode ? DIR_COLOR : T.border}`,
                   padding: "16px 84px 16px 20px", color: "#fff", outline: "none",
-                  fontSize: 14, fontFamily: directorMode ? "monospace" : "inherit", resize: "none",
+                  fontSize: 14, fontFamily: "monospace", resize: "none",
                   maxHeight: "30vh", overflowY: "auto",
                   boxSizing: "border-box", display: "block",
                   transition: "border-color 0.2s",

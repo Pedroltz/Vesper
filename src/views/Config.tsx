@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Settings } from "../types";
 import { Eye, EyeOff, Check, Cpu, Key, Info } from "lucide-react";
+import vesperIcon from "../assets/vesper-icon.png";
 
 /* ── Design tokens — Editorial Noir ── */
 const T = {
@@ -139,12 +140,13 @@ export default function Config({ settings, onSaveSettings }: ConfigProps) {
             {/* App identity */}
             <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
               <div style={{
-                width: 64, height: 64, background: "#000",
-                border: `1px solid ${T.accent}`, display: "flex",
-                alignItems: "center", justifyContent: "center",
-                fontWeight: 900, fontSize: 32, color: T.accent,
+                width: 64, height: 64,
+                border: `1px solid ${T.accent}`,
                 boxShadow: `0 0 20px rgba(209,255,38,0.15)`,
-              }}>V</div>
+                overflow: "hidden", flexShrink: 0,
+              }}>
+                <img src={vesperIcon} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              </div>
               <div>
                 <h2 style={{ margin: 0, fontSize: 28, fontWeight: 900, letterSpacing: "-0.03em" }}>Vesper</h2>
                 <p style={{ margin: "4px 0 0", fontFamily: "monospace", fontSize: 10, color: T.sub }}>v0.2.1 — NOIR_ROLEPLAY_ENGINE</p>

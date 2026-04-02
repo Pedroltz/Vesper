@@ -4,6 +4,7 @@ import Chat from "./views/Chat";
 import Config from "./views/Config";
 import CharacterModal from "./components/CharacterModal";
 import { Settings as SettingsIcon, Plus, LayoutGrid, X, Minus, Square, Database, Pencil, Trash2, AlertTriangle } from "lucide-react";
+import vesperIcon from "./assets/vesper-icon.png";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const appWindow = getCurrentWindow();
@@ -192,7 +193,9 @@ export default function App() {
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
         <aside style={{ width: 72, background: T.panel, borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", alignItems: "center", padding: "24px 0", zIndex: 100, position: "relative" }}>
           <div style={{ marginBottom: 40, display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
-            <div style={{ width: 36, height: 36, background: "#000", border: `1px solid ${T.accent}`, color: T.accent, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 20, borderRadius: 2, boxShadow: `0 0 10px rgba(209, 255, 38, 0.2)` }}>V</div>
+            <div style={{ width: 36, height: 36, border: `1px solid ${T.accent}`, borderRadius: 2, boxShadow: `0 0 10px rgba(209, 255, 38, 0.2)`, overflow: "hidden" }}>
+                <img src={vesperIcon} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              </div>
             <div style={{ width: 4, height: 4, borderRadius: "50%", background: T.accent, boxShadow: `0 0 8px ${T.accent}` }} />
           </div>
           <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 24, zIndex: 2 }}>
