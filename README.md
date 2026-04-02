@@ -46,8 +46,3 @@ npm run tauri build
 - **Frontend**: React 19, TypeScript, Tailwind CSS.
 - **Backend**: Rust, Tauri v2.
 - **Styling**: Editorial Noir design system with custom window decorations.
-
-## Versioning
-
-Current Version: 0.1.0
-Status: Beta Initial Release
