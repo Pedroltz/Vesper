@@ -29,4 +29,16 @@ export interface Session {
   summary?: string;         // AI-generated summary of this session
   importedContext?: string; // Summary imported from another session
   scenario?: string;        // Initial scenario/context set at session start
+  archived?: boolean;       // Already summarized into permanent memory
+}
+
+// Permanent, per-character memory. Persisted in localStorage as
+// `vesper-memory-${characterId}` and injected into every session's system prompt.
+export interface MemoryEntry {
+  id: string;
+  content: string;                        // the fact, in free text
+  kind: "manual" | "session-summary";     // how it was created
+  pinned: boolean;                        // always injected, ignores token budget
+  createdAt: number;
+  sourceSessionId?: string;               // origin session, if generated from one
 }
