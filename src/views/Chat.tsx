@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Character, Settings, Message, Session } from "../types";
+import { Character, Settings, Message, Session, MemoryEntry } from "../types";
 import SaveDialog from "../components/SaveDialog";
 import {
-  Send, User, Trash2, Pencil, X, RotateCcw, Info, History, Download, Cpu, Check, Wand2,
+  Send, User, Trash2, Pencil, X, RotateCcw, Info, History, Download, Cpu, Check, Wand2, Brain,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 
@@ -26,6 +26,7 @@ interface ChatProps {
   session: Session;
   sessions: Session[];
   onNewSession: () => void;
+  onArchiveAndNewSession: (archiveId: string, archiveUpdates: Partial<Session>) => void;
   onSelectSession: (s: Session) => void;
   onDeleteSession: (id: string) => void;
   onUpdateSession: (id: string, updates: Partial<Session>) => void;
@@ -73,7 +74,7 @@ function buildExportContent(s: Session, char: Character, msgs: Message[]): strin
 
 export default function Chat({
   character, settings, onEdit,
-  session, sessions, onNewSession, onSelectSession, onDeleteSession, onUpdateSession,
+  session, sessions, onNewSession, onArchiveAndNewSession, onSelectSession, onDeleteSession, onUpdateSession,
 }: ChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -86,6 +87,11 @@ export default function Chat({
   const [scenarioDismissed, setScenarioDismissed] = useState(false);
   const [responseLength, setResponseLength] = useState(600);
   const [directorMode, setDirectorMode] = useState(false);
+  const [memory, setMemory] = useState<MemoryEntry[]>([]);
+  const [showMemory, setShowMemory] = useState(false);
+  const [memDraft, setMemDraft] = useState("");
+  const [showArchivePrompt, setShowArchivePrompt] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const DIR_COLOR = "#a78bfa";
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -110,6 +116,13 @@ export default function Chat({
     if (skipNextSaveRef.current) { skipNextSaveRef.current = false; return; }
     localStorage.setItem(`vesper-msgs-${session.id}`, JSON.stringify(messages));
   }, [messages, session.id]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(`vesper-memory-${character.id}`);
+      setMemory(raw ? JSON.parse(raw) : []);
+    } catch { setMemory([]); }
+  }, [character.id]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -142,6 +155,87 @@ export default function Chat({
     return data.choices[0].message.content as string;
   };
 
+  /* ── Permanent character memory ── */
+  const MEM_BUDGET = 1500; // max chars of non-pinned memory injected per request
+  const persistMemory = (next: MemoryEntry[]) => {
+    setMemory(next);
+    localStorage.setItem(`vesper-memory-${character.id}`, JSON.stringify(next));
+  };
+  const appendMemory = (content: string, kind: MemoryEntry["kind"], pinned: boolean, sourceSessionId?: string) => {
+    const trimmed = content.trim();
+    if (!trimmed) return;
+    const entry: MemoryEntry = {
+      id: crypto.randomUUID(), content: trimmed, kind, pinned, createdAt: Date.now(), sourceSessionId,
+    };
+    persistMemory([...memory, entry]);
+  };
+  const addMemory = () => {
+    if (!memDraft.trim()) return;
+    appendMemory(memDraft, "manual", true);
+    setMemDraft("");
+  };
+  const updateMemory = (id: string, content: string) =>
+    persistMemory(memory.map(e => e.id === id ? { ...e, content } : e));
+  const deleteMemory = (id: string) =>
+    persistMemory(memory.filter(e => e.id !== id));
+  const togglePinMemory = (id: string) =>
+    persistMemory(memory.map(e => e.id === id ? { ...e, pinned: !e.pinned } : e));
+
+  /* ── New session: offer to archive the current one into memory first ── */
+  const requestNewSession = () => {
+    if (messages.length > 0 && !session.archived) setShowArchivePrompt(true);
+    else onNewSession();
+  };
+
+  const generateSessionSummary = (): Promise<string> => {
+    const transcript = messages
+      .map(m => `${m.role === "user" ? "Usuário" : character.name}: ${m.content}`)
+      .join("\n\n");
+    return callAPI([
+      { role: "system", content: "Você é um assistente de narrativa. Crie resumos concisos de conversas de roleplay." },
+      { role: "user", content: `Resuma esta conversa de roleplay entre um usuário e o personagem "${character.name}" em 4 a 6 frases objetivas em português. Use passado. Descreva eventos importantes, revelações e desenvolvimentos da relação. Seja conciso.\n\nConversa:\n${transcript}` },
+    ]);
+  };
+
+  const handleArchiveAndNew = async () => {
+    setArchiving(true);
+    try {
+      const summary = await generateSessionSummary();
+      appendMemory(summary, "session-summary", false, session.id);
+      setShowArchivePrompt(false);
+      onArchiveAndNewSession(session.id, { archived: true, summary });
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : "Erro ao gerar resumo.");
+    } finally {
+      setArchiving(false);
+    }
+  };
+
+  const handleSkipArchive = () => {
+    setShowArchivePrompt(false);
+    onNewSession();
+  };
+
+  // Pinned entries always included; non-pinned added (most recent first) until budget is spent.
+  const buildMemoryBlock = () => {
+    if (memory.length === 0) return "";
+    const pinned = memory.filter(e => e.pinned);
+    const rest = memory.filter(e => !e.pinned).sort((a, b) => b.createdAt - a.createdAt);
+    const chosen = [...pinned];
+    let budget = MEM_BUDGET;
+    for (const e of rest) {
+      if (budget - e.content.length < 0) break;
+      chosen.push(e);
+      budget -= e.content.length;
+    }
+    if (chosen.length === 0) return "";
+    const lines = chosen
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map(e => `- ${e.content}`)
+      .join("\n");
+    return `\n// MEMÓRIA PERMANENTE (fatos que você sempre lembra sobre si, o usuário e a história):\n${lines}\n`;
+  };
+
   /* ── Build system prompt (Injects Identity, Background and Context) ── */
   const buildSystemPrompt = () => {
     const identity = `VOCÊ É: ${character.name.toUpperCase()}\n`;
@@ -157,9 +251,10 @@ export default function Chat({
     const lengthGuide = `\n// TAMANHO DA RESPOSTA:\nEscreva respostas de tamanho ${lengthLabel}. Sempre termine suas frases e cenas de forma completa — nunca corte no meio. Adapte a profundidade da narrativa ao tamanho permitido.\n`;
 
     const scenario = session.scenario ? `\n// CENÁRIO DESTA SESSÃO:\n${session.scenario}\n` : "";
-    const memory = session.importedContext ? `\n// MEMÓRIA DE SESSÃO ANTERIOR:\n${session.importedContext}\n` : "";
+    const priorContext = session.importedContext ? `\n// MEMÓRIA DE SESSÃO ANTERIOR:\n${session.importedContext}\n` : "";
+    const permanentMemory = buildMemoryBlock();
 
-    return `${identity}${background}${coreInstructions}${formatting}${lengthGuide}${scenario}${memory}`;
+    return `${identity}${background}${coreInstructions}${formatting}${lengthGuide}${permanentMemory}${scenario}${priorContext}`;
   };
 
   /* ── Send ── */
@@ -357,14 +452,14 @@ export default function Chat({
             display: "flex", alignItems: "flex-start", justifyContent: "space-between",
           }}>
             <div>
-              <p style={{ margin: 0, fontFamily: "monospace", fontSize: 9, color: T.accent, letterSpacing: "0.12em" }}>MEMORY_BANK</p>
+              <p style={{ margin: 0, fontFamily: "monospace", fontSize: 9, color: T.accent, letterSpacing: "0.12em" }}>SESSÕES</p>
               <p style={{ margin: "5px 0 0", fontSize: 11, color: T.sub, fontFamily: "monospace" }}>
                 {sessions.length} session{sessions.length !== 1 ? "s" : ""}
               </p>
             </div>
             <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <button
-                onClick={onNewSession}
+                onClick={requestNewSession}
                 style={{
                   fontFamily: "monospace", fontSize: 9, fontWeight: 900, letterSpacing: "0.06em",
                   color: T.accent, background: "none", border: `1px solid ${T.accent}`,
@@ -393,12 +488,55 @@ export default function Chat({
                 hasImported={session.importedContext !== undefined && s.id !== session.id}
                 onSelect={() => { onSelectSession(s); if (isNarrow) setShowSessions(false); }}
                 onDelete={() => onDeleteSession(s.id)}
+                onRename={title => onUpdateSession(s.id, { title })}
                 onExport={() => openExportDialog(s, loadSessionMsgs(s.id))}
                 onExportCurrent={() => openExportDialog(session, messages)}
                 onImport={() => handleImportContext(s)}
               />
             ))}
           </div>
+        </aside>
+      )}
+
+      {/* ── Memory panel (left) ── */}
+      {showMemory && (
+        <aside style={{
+          width: isNarrow ? "100%" : 320,
+          position: isNarrow ? "absolute" : "relative",
+          left: 0, top: 0, bottom: 0, zIndex: 100,
+          background: T.panel, borderRight: `1px solid ${T.border}`,
+          display: "flex", flexDirection: "column", overflow: "hidden",
+          boxShadow: isNarrow ? "10px 0 40px rgba(0,0,0,0.8)" : "none",
+        }}>
+          <div style={{
+            padding: "20px 20px 16px", borderBottom: `1px solid ${T.border}`,
+            display: "flex", alignItems: "flex-start", justifyContent: "space-between",
+          }}>
+            <div>
+              <p style={{ margin: 0, fontFamily: "monospace", fontSize: 9, color: T.accent, letterSpacing: "0.12em", display: "flex", alignItems: "center", gap: 6 }}>
+                <Brain size={11} /> MEMÓRIA_PERMANENTE
+              </p>
+              <p style={{ margin: "5px 0 0", fontSize: 11, color: T.sub, fontFamily: "monospace" }}>
+                {memory.length} {memory.length === 1 ? "entrada" : "entradas"} · sempre lembradas
+              </p>
+            </div>
+            {isNarrow && (
+              <button onClick={() => setShowMemory(false)} style={{ background: "none", border: "none", color: T.sub, cursor: "pointer", display: "flex", padding: 4 }}>
+                <X size={16} />
+              </button>
+            )}
+          </div>
+
+          <MemoryPanel
+            memory={memory}
+            budget={MEM_BUDGET}
+            draft={memDraft}
+            setDraft={setMemDraft}
+            onAdd={addMemory}
+            onUpdate={updateMemory}
+            onDelete={deleteMemory}
+            onTogglePin={togglePinMemory}
+          />
         </aside>
       )}
 
@@ -435,14 +573,21 @@ export default function Chat({
             <HeaderBtn onClick={clearMessages} title="Limpar sessão"><Trash2 size={14} /></HeaderBtn>
             <HeaderBtn onClick={onEdit} title="Editar personagem"><Pencil size={14} /></HeaderBtn>
             <HeaderBtn
-              onClick={() => { setShowSessions(v => !v); setShowInfo(false); }}
+              onClick={() => { setShowMemory(v => !v); setShowSessions(false); setShowInfo(false); }}
+              active={showMemory}
+              title="Memória permanente"
+            >
+              <Brain size={14} />
+            </HeaderBtn>
+            <HeaderBtn
+              onClick={() => { setShowSessions(v => !v); setShowMemory(false); setShowInfo(false); }}
               active={showSessions}
-              title="Sessões / Memórias"
+              title="Sessões"
             >
               <History size={14} />
             </HeaderBtn>
             <HeaderBtn
-              onClick={() => { setShowInfo(v => !v); setShowSessions(false); }}
+              onClick={() => { setShowInfo(v => !v); setShowSessions(false); setShowMemory(false); }}
               active={showInfo}
               title="Ficha do personagem"
             >
@@ -585,7 +730,7 @@ export default function Chat({
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={e => {
                   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
-                  if (e.key === "Control") { e.preventDefault(); setDirectorMode(v => !v); }
+                  if (e.key === "Tab") { e.preventDefault(); setDirectorMode(v => !v); }
                 }}
                 placeholder={directorMode ? "Instrução ao personagem — não registrada no chat..." : isNarrow ? "Comando..." : `Enviar comando para ${character.name}...`}
                 style={{
@@ -602,7 +747,7 @@ export default function Chat({
               {/* Director toggle */}
               <button
                 onClick={() => setDirectorMode(v => !v)}
-                title="Modo Diretor — instrução silenciosa"
+                title="Modo Diretor — instrução silenciosa (Tab)"
                 style={{
                   position: "absolute", right: 46, bottom: 13,
                   background: "none", border: "none", cursor: "pointer",
@@ -628,6 +773,23 @@ export default function Chat({
                 <Send size={18} />
               </button>
             </div>
+
+            {/* Hint: how to enter director mode */}
+            {!directorMode && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, marginTop: 6 }}>
+                <Wand2 size={9} color={T.sub} />
+                <span style={{ fontFamily: "monospace", fontSize: 9, color: T.sub, letterSpacing: "0.08em" }}>
+                  MODO_DIRETOR
+                </span>
+                <kbd style={{
+                  fontFamily: "monospace", fontSize: 8, fontWeight: 900, color: T.sub,
+                  border: `1px solid ${T.border}`, borderRadius: 2, padding: "1px 5px",
+                  letterSpacing: "0.1em",
+                }}>
+                  TAB
+                </kbd>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -640,6 +802,18 @@ export default function Chat({
           onClose={() => setSaveDialog(null)}
         />
       )}
+
+      {/* ── Archive-on-new-session prompt ── */}
+      {showArchivePrompt && (
+        <ArchivePrompt
+          characterName={character.name}
+          archiving={archiving}
+          onArchive={handleArchiveAndNew}
+          onSkip={handleSkipArchive}
+          onCancel={() => { if (!archiving) setShowArchivePrompt(false); }}
+        />
+      )}
+
 
       {/* ── Info panel (right) ── */}
       {showInfo && (
@@ -813,7 +987,7 @@ function ScenarioPrompt({ onSet, onDismiss }: {
 }
 
 /* ── Session list item ── */
-function SessionItem({ s, active, isCurrentSession, canDelete, isGenerating, onSelect, onDelete, onExport, onExportCurrent, onImport }: {
+function SessionItem({ s, active, isCurrentSession, canDelete, isGenerating, onSelect, onDelete, onRename, onExport, onExportCurrent, onImport }: {
   s: Session;
   active: boolean;
   isCurrentSession: boolean;
@@ -822,11 +996,27 @@ function SessionItem({ s, active, isCurrentSession, canDelete, isGenerating, onS
   hasImported: boolean;
   onSelect: () => void;
   onDelete: () => void;
+  onRename: (title: string) => void;
   onExport: () => void;
   onExportCurrent: () => void;
   onImport: () => void;
 }) {
   const [hov, setHov] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(s.title);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) { inputRef.current?.focus(); inputRef.current?.select(); }
+  }, [editing]);
+
+  const startEdit = () => { setDraft(s.title); setEditing(true); };
+  const commitEdit = () => {
+    const next = draft.trim();
+    if (next && next !== s.title) onRename(next);
+    setEditing(false);
+  };
+  const cancelEdit = () => { setDraft(s.title); setEditing(false); };
   return (
     <div
       onClick={onSelect}
@@ -844,14 +1034,35 @@ function SessionItem({ s, active, isCurrentSession, canDelete, isGenerating, onS
         {/* Text */}
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 3 }}>
-            <p style={{
-              margin: 0, fontSize: 12, fontWeight: 700,
-              color: active ? T.accent : hov ? T.text : T.sub,
-              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-              flex: 1, minWidth: 0,
-            }}>
-              {s.title}
-            </p>
+            {editing ? (
+              <input
+                ref={inputRef}
+                value={draft}
+                onClick={e => e.stopPropagation()}
+                onChange={e => setDraft(e.target.value)}
+                onBlur={commitEdit}
+                onKeyDown={e => {
+                  if (e.key === "Enter") { e.preventDefault(); commitEdit(); }
+                  if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
+                }}
+                style={{
+                  flex: 1, minWidth: 0,
+                  background: T.surface, border: `1px solid ${T.accent}`,
+                  color: T.text, outline: "none",
+                  fontSize: 12, fontWeight: 700, fontFamily: "inherit",
+                  padding: "2px 6px",
+                }}
+              />
+            ) : (
+              <p style={{
+                margin: 0, fontSize: 12, fontWeight: 700,
+                color: active ? T.accent : hov ? T.text : T.sub,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                flex: 1, minWidth: 0,
+              }}>
+                {s.title}
+              </p>
+            )}
             {s.summary && (
               <span style={{ fontSize: 8, fontFamily: "monospace", color: T.accent, flexShrink: 0, letterSpacing: "0.05em" }}>
                 ∑
@@ -871,6 +1082,11 @@ function SessionItem({ s, active, isCurrentSession, canDelete, isGenerating, onS
             style={{ display: "flex", gap: 3, flexShrink: 0, alignItems: "center" }}
             onClick={e => e.stopPropagation()}
           >
+            {/* Rename */}
+            <IconBtn onClick={startEdit} title="Renomear sessão" color={T.sub}>
+              <Pencil size={12} />
+            </IconBtn>
+
             {/* Export */}
             <IconBtn
               onClick={isCurrentSession ? onExportCurrent : onExport}
@@ -905,12 +1121,12 @@ function SessionItem({ s, active, isCurrentSession, canDelete, isGenerating, onS
         )}
       </div>
 
-      {/* Summary preview (if exists and not hovering) */}
-      {s.summary && !hov && (
+      {/* Summary preview (only on hover) */}
+      {s.summary && hov && (
         <p style={{
           margin: "8px 0 0", fontSize: 10, color: T.faint,
           lineHeight: 1.5, fontStyle: "italic",
-          display: "-webkit-box", WebkitLineClamp: 2,
+          display: "-webkit-box", WebkitLineClamp: 3,
           WebkitBoxOrient: "vertical" as const, overflow: "hidden",
         }}>
           {s.summary}
@@ -944,6 +1160,256 @@ function IconBtn({ children, onClick, title, color, hoverColor, disabled }: {
     >
       {children}
     </button>
+  );
+}
+
+/* ── Permanent memory panel ── */
+function MemoryPanel({ memory, budget, draft, setDraft, onAdd, onUpdate, onDelete, onTogglePin }: {
+  memory: MemoryEntry[];
+  budget: number;
+  draft: string;
+  setDraft: (v: string) => void;
+  onAdd: () => void;
+  onUpdate: (id: string, content: string) => void;
+  onDelete: (id: string) => void;
+  onTogglePin: (id: string) => void;
+}) {
+  // Pinned first, then most recent.
+  const ordered = [...memory].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return b.createdAt - a.createdAt;
+  });
+  const pinnedCount = memory.filter(e => e.pinned).length;
+  const nonPinnedChars = memory.filter(e => !e.pinned).reduce((a, e) => a + e.content.length, 0);
+  const usedPct = Math.min(100, Math.round((nonPinnedChars / budget) * 100));
+  const overBudget = nonPinnedChars > budget;
+  return (
+    <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+      {/* Add field */}
+      <div style={{ padding: 16, borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
+        <textarea
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onAdd(); } }}
+          placeholder="Adicionar à memória — ex: tem uma irmã chamada Lia; odeia mentiras."
+          rows={2}
+          style={{
+            width: "100%", background: T.surface, border: `1px solid ${T.border}`,
+            color: T.text, outline: "none", resize: "none",
+            fontFamily: "inherit", fontSize: 12, lineHeight: 1.5,
+            padding: "8px 10px", boxSizing: "border-box", display: "block", marginBottom: 8,
+          }}
+        />
+        <button
+          onClick={onAdd}
+          style={{
+            width: "100%", background: "none", border: `1px solid ${T.accent}`, color: T.accent,
+            padding: "7px 0", cursor: "pointer",
+            fontFamily: "monospace", fontSize: 9, fontWeight: 900, letterSpacing: "0.08em",
+          }}
+        >
+          + ADICIONAR_MEMÓRIA
+        </button>
+      </div>
+
+      {/* Budget indicator */}
+      {memory.length > 0 && (
+        <div style={{ padding: "12px 16px", borderBottom: `1px solid ${T.border}`, flexShrink: 0 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+            <span style={{ fontFamily: "monospace", fontSize: 8, color: T.sub, letterSpacing: "0.08em" }}>
+              ★ {pinnedCount} FIXADAS · SEMPRE
+            </span>
+            <span style={{ fontFamily: "monospace", fontSize: 8, color: overBudget ? T.red : T.sub, letterSpacing: "0.08em" }}>
+              {nonPinnedChars}/{budget}
+            </span>
+          </div>
+          <div style={{ height: 3, background: T.border, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${usedPct}%`, background: overBudget ? T.red : T.accent, transition: "width 0.2s" }} />
+          </div>
+          {overBudget && (
+            <p style={{ margin: "6px 0 0", fontFamily: "monospace", fontSize: 8, color: T.red, lineHeight: 1.4 }}>
+              As entradas não-fixadas mais antigas não entram no prompt.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* List */}
+      {ordered.length === 0 ? (
+        <div style={{ padding: "32px 20px", textAlign: "center" }}>
+          <p style={{ fontFamily: "monospace", fontSize: 9, color: T.faint, letterSpacing: "0.1em", lineHeight: 2 }}>
+            MEMÓRIA_VAZIA
+            <br />
+            Fatos salvos aqui são lembrados em todas as sessões.
+          </p>
+        </div>
+      ) : (
+        ordered.map(e => (
+          <MemoryItem key={e.id} entry={e} onUpdate={onUpdate} onDelete={onDelete} onTogglePin={onTogglePin} />
+        ))
+      )}
+    </div>
+  );
+}
+
+/* ── Single memory entry ── */
+function MemoryItem({ entry, onUpdate, onDelete, onTogglePin }: {
+  entry: MemoryEntry;
+  onUpdate: (id: string, content: string) => void;
+  onDelete: (id: string) => void;
+  onTogglePin: (id: string) => void;
+}) {
+  const [hov, setHov] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(entry.content);
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (editing && ref.current) {
+      ref.current.focus();
+      ref.current.style.height = "0px";
+      ref.current.style.height = ref.current.scrollHeight + "px";
+    }
+  }, [editing]);
+
+  const commit = () => {
+    const next = draft.trim();
+    if (next && next !== entry.content) onUpdate(entry.id, next);
+    setEditing(false);
+  };
+  const cancel = () => { setDraft(entry.content); setEditing(false); };
+
+  return (
+    <div
+      onMouseEnter={() => setHov(true)}
+      onMouseLeave={() => setHov(false)}
+      style={{
+        padding: "12px 16px", borderBottom: `1px solid ${T.border}`,
+        borderLeft: `2px solid ${entry.pinned ? T.accent : "transparent"}`,
+        background: hov ? "rgba(255,255,255,0.02)" : "transparent",
+      }}
+    >
+      {editing ? (
+        <div>
+          <textarea
+            ref={ref}
+            value={draft}
+            onChange={e => {
+              setDraft(e.target.value);
+              e.currentTarget.style.height = "0px";
+              e.currentTarget.style.height = e.currentTarget.scrollHeight + "px";
+            }}
+            onKeyDown={e => {
+              if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commit(); }
+              if (e.key === "Escape") cancel();
+            }}
+            style={{
+              width: "100%", background: T.surface, border: `1px solid ${T.accent}`,
+              color: T.text, outline: "none", resize: "none", overflow: "hidden",
+              fontFamily: "inherit", fontSize: 12, lineHeight: 1.5,
+              padding: "8px 10px", boxSizing: "border-box", display: "block",
+            }}
+          />
+          <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+            <button
+              onClick={commit}
+              style={{ background: T.accent, border: "none", color: "#000", padding: "5px 12px", cursor: "pointer", fontFamily: "monospace", fontSize: 9, fontWeight: 900, letterSpacing: "0.06em", display: "flex", alignItems: "center", gap: 4 }}
+            >
+              <Check size={10} /> SALVAR
+            </button>
+            <button
+              onClick={cancel}
+              style={{ background: "none", border: `1px solid ${T.border}`, color: T.sub, padding: "5px 12px", cursor: "pointer", fontFamily: "monospace", fontSize: 9, fontWeight: 900, letterSpacing: "0.06em" }}
+            >
+              CANCELAR
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+          <button
+            onClick={() => onTogglePin(entry.id)}
+            title={entry.pinned ? "Fixada — sempre incluída. Clique para desafixar." : "Fixar (sempre incluir, ignora o limite)"}
+            style={{
+              background: "none", border: "none", cursor: "pointer", padding: 0, marginTop: 1,
+              color: entry.pinned ? T.accent : T.faint, fontSize: 13, lineHeight: 1, flexShrink: 0,
+            }}
+          >
+            {entry.pinned ? "★" : "☆"}
+          </button>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <p style={{ margin: 0, fontSize: 12, color: T.text, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
+              {entry.content}
+            </p>
+            <p style={{ margin: "5px 0 0", fontFamily: "monospace", fontSize: 8, color: T.faint, letterSpacing: "0.06em" }}>
+              {entry.kind === "manual" ? "MANUAL" : "RESUMO_SESSÃO"}
+              {" · "}
+              {new Date(entry.createdAt).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit" })}
+            </p>
+          </div>
+          {hov && (
+            <div style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+              <IconBtn onClick={() => { setDraft(entry.content); setEditing(true); }} title="Editar" color={T.sub}>
+                <Pencil size={12} />
+              </IconBtn>
+              <IconBtn onClick={() => onDelete(entry.id)} title="Apagar" color={T.sub} hoverColor={T.red}>
+                <Trash2 size={12} />
+              </IconBtn>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Archive-on-new-session prompt ── */
+function ArchivePrompt({ characterName, archiving, onArchive, onSkip, onCancel }: {
+  characterName: string;
+  archiving: boolean;
+  onArchive: () => void;
+  onSkip: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 350, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.92)", backdropFilter: "blur(6px)" }} onClick={onCancel} />
+      <div className="slide-up" style={{ position: "relative", width: "100%", maxWidth: 440, background: "#000", border: `1px solid ${T.border}`, padding: 32 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+          <Brain size={28} color={T.accent} />
+          <h2 style={{ margin: 0, fontSize: 13, fontWeight: 900, color: "#fff", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+            ARQUIVAR_NA_MEMÓRIA
+          </h2>
+        </div>
+        <p style={{ fontSize: 13, color: T.sub, lineHeight: 1.6, marginBottom: 28 }}>
+          Gerar um resumo desta sessão para <span style={{ color: "#fff", fontWeight: 700 }}>{characterName}</span> lembrar dos acontecimentos em sessões futuras? O resumo é adicionado à memória permanente do personagem.
+        </p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <button
+            onClick={onArchive}
+            disabled={archiving}
+            style={{
+              width: "100%", background: T.accent, border: "none", color: "#000",
+              padding: "12px 0", cursor: archiving ? "default" : "pointer",
+              fontSize: 11, fontWeight: 900, letterSpacing: "0.08em", opacity: archiving ? 0.7 : 1,
+            }}
+          >
+            {archiving ? "GERANDO_RESUMO..." : "GERAR_RESUMO E CRIAR_SESSÃO"}
+          </button>
+          <button
+            onClick={onSkip}
+            disabled={archiving}
+            style={{
+              width: "100%", background: "none", border: `1px solid ${T.border}`, color: T.sub,
+              padding: "12px 0", cursor: archiving ? "default" : "pointer",
+              fontSize: 11, fontWeight: 900, letterSpacing: "0.08em",
+            }}
+          >
+            SÓ_CRIAR_NOVA_SESSÃO
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1093,10 +1559,14 @@ function MsgBubble({ msg, isUser, onDelete, onRetry, onEdit }: {
             <ReactMarkdown>{msg.content}</ReactMarkdown>
           </div>
 
-          {/* Action bar — inline at bottom-right, only assistant messages */}
-          {!isUser && hov && (
+          {/* Action bar — inline at bottom-right, only assistant messages.
+              Always rendered (space reserved) so the bubble height never changes on hover. */}
+          {!isUser && (
             <div style={{
               display: "flex", justifyContent: "flex-end", gap: 4, marginTop: 8,
+              opacity: hov ? 1 : 0,
+              pointerEvents: hov ? "auto" : "none",
+              transition: "opacity 0.12s",
             }}>
               <MsgActionBtn onClick={() => { setDraft(msg.content); setEditing(true); }} title="Editar mensagem">
                 <Pencil size={11} />

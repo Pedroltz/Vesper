@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Character } from "../types";
 import { X, ImagePlus, Trash2 } from "lucide-react";
+import ImageCropper from "./ImageCropper";
 
 /* ── Design tokens ── */
 const T = {
@@ -32,6 +33,7 @@ interface Props {
 
 export default function CharacterModal({ initialChar, isEditing, onSave, onDelete, onClose }: Props) {
   const [char, setChar] = useState<Partial<Character>>(initialChar);
+  const [cropSrc, setCropSrc] = useState<string | null>(null);
 
   const set = (field: keyof Character, value: string) =>
     setChar(prev => ({ ...prev, [field]: value }));
@@ -42,6 +44,16 @@ export default function CharacterModal({ initialChar, isEditing, onSave, onDelet
     const reader = new FileReader();
     reader.onloadend = () => set(field, reader.result as string);
     reader.readAsDataURL(file);
+  };
+
+  // Profile image goes through the cropper so it fits the index card rectangle.
+  const handleProfileFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onloadend = () => setCropSrc(reader.result as string);
+    reader.readAsDataURL(file);
+    e.target.value = ""; // allow re-selecting the same file
   };
 
   const handleSave = () => {
@@ -88,7 +100,7 @@ export default function CharacterModal({ initialChar, isEditing, onSave, onDelet
                />
             </div>
             <div style={{ display: "flex", gap: 12 }}>
-               <ImageField label="PROFILE_IMG" src={char.profilePicture} onChange={e => handleFile(e, "profilePicture")} />
+               <ImageField label="PROFILE_IMG" src={char.profilePicture} onChange={handleProfileFile} />
                <ImageField label="WALLPAPER_IMG" src={char.wallpaper} onChange={e => handleFile(e, "wallpaper")} landscape />
             </div>
           </div>
@@ -153,6 +165,15 @@ export default function CharacterModal({ initialChar, isEditing, onSave, onDelet
           </div>
         </div>
       </div>
+
+      {cropSrc && (
+        <ImageCropper
+          src={cropSrc}
+          aspect={2 / 3}
+          onCancel={() => setCropSrc(null)}
+          onCrop={dataUrl => { set("profilePicture", dataUrl); setCropSrc(null); }}
+        />
+      )}
     </div>
   );
 }

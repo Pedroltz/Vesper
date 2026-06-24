@@ -2,8 +2,9 @@ import { useState, useEffect } from "react";
 import { Settings, Character, Session } from "./types";
 import Chat from "./views/Chat";
 import Config from "./views/Config";
+import Memory from "./views/Memory";
 import CharacterModal from "./components/CharacterModal";
-import { Settings as SettingsIcon, Plus, LayoutGrid, X, Minus, Square, Database, Pencil, Trash2, AlertTriangle } from "lucide-react";
+import { Settings as SettingsIcon, Plus, LayoutGrid, X, Minus, Square, Database, Pencil, Trash2, AlertTriangle, Brain } from "lucide-react";
 import vesperIcon from "./assets/vesper-icon.png";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -64,7 +65,7 @@ export const T = {
   red:      "#ff4d4d",
 } as const;
 
-type View = "gallery" | "chat" | "settings";
+type View = "gallery" | "chat" | "settings" | "memory";
 type ModalState = { char: Partial<Character>; isEditing: boolean } | null;
 type ConfirmState = { id: string; name: string } | null;
 
@@ -155,6 +156,11 @@ export default function App() {
     setView("chat");
   };
 
+  const openMemory = (char: Character) => {
+    setSelectedChar(char);
+    setView("memory");
+  };
+
   const handleNewSession = () => {
     if (!selectedChar) return;
     const newSession: Session = {
@@ -182,6 +188,25 @@ export default function App() {
     setSessions(updated);
     if (selectedChar) localStorage.setItem(`vesper-sessions-${selectedChar.id}`, JSON.stringify(updated));
     if (selectedSession?.id === id) setSelectedSession(prev => prev ? { ...prev, ...updates } : prev);
+  };
+
+  // Archive the current session (apply updates) and open a fresh one — in a single
+  // state write so the archive flag isn't clobbered by the new-session write.
+  const handleArchiveAndNewSession = (archiveId: string, archiveUpdates: Partial<Session>) => {
+    if (!selectedChar) return;
+    const newSession: Session = {
+      id: crypto.randomUUID(),
+      characterId: selectedChar.id,
+      title: `Sessão ${sessions.length + 1}`,
+      createdAt: Date.now(),
+    };
+    const updated = [
+      ...sessions.map(s => s.id === archiveId ? { ...s, ...archiveUpdates } : s),
+      newSession,
+    ];
+    setSessions(updated);
+    localStorage.setItem(`vesper-sessions-${selectedChar.id}`, JSON.stringify(updated));
+    setSelectedSession(newSession);
   };
 
   return (
@@ -219,9 +244,11 @@ export default function App() {
           {view === "settings" ? (
             <Config settings={settings} onSaveSettings={s => { setSettings(s); localStorage.setItem("vesper-settings", JSON.stringify(s)); }} />
           ) : view === "chat" && selectedChar && selectedSession ? (
-            <Chat character={selectedChar} settings={settings} onEdit={() => openEdit(selectedChar)} session={selectedSession} sessions={sessions} onNewSession={handleNewSession} onSelectSession={s => setSelectedSession(s)} onDeleteSession={handleDeleteSession} onUpdateSession={handleUpdateSession} />
+            <Chat character={selectedChar} settings={settings} onEdit={() => openEdit(selectedChar)} session={selectedSession} sessions={sessions} onNewSession={handleNewSession} onArchiveAndNewSession={handleArchiveAndNewSession} onSelectSession={s => setSelectedSession(s)} onDeleteSession={handleDeleteSession} onUpdateSession={handleUpdateSession} />
+          ) : view === "memory" && selectedChar ? (
+            <Memory character={selectedChar} onBack={() => setView("gallery")} />
           ) : (
-            <GalleryView characters={characters} onSelect={selectChar} onOpenCreate={openCreate} onEdit={openEdit} onDelete={requestDelete} isNarrow={isNarrow} />
+            <GalleryView characters={characters} onSelect={selectChar} onOpenCreate={openCreate} onEdit={openEdit} onDelete={requestDelete} onMemory={openMemory} isNarrow={isNarrow} />
           )}
         </main>
       </div>
@@ -272,7 +299,7 @@ function ConfirmModal({ name, onCancel, onConfirm }: { name: string, onCancel: (
   );
 }
 
-function GalleryView({ characters, onSelect, onOpenCreate, onEdit, onDelete, isNarrow }: any) {
+function GalleryView({ characters, onSelect, onOpenCreate, onEdit, onDelete, onMemory, isNarrow }: any) {
   return (
     <div style={{ height: "100%", overflowY: "auto", padding: isNarrow ? "40px 24px" : "80px 5vw" }}>
       <div style={{ maxWidth: 1400, margin: "0 auto" }}>
@@ -282,9 +309,9 @@ function GalleryView({ characters, onSelect, onOpenCreate, onEdit, onDelete, isN
         </div>
         <div style={{ display: "grid", gridTemplateColumns: isNarrow ? "repeat(auto-fill, minmax(280px, 1fr))" : "repeat(auto-fill, minmax(320px, 1fr))", gap: isNarrow ? "32px 24px" : "60px 40px" }}>
           {characters.map((c: Character, i: number) => (
-            <DossierCard key={c.id} char={c} index={(i + 1).toString().padStart(2, '0')} onClick={() => onSelect(c)} onEdit={() => onEdit(c)} onDelete={() => onDelete(c)} />
+            <DossierCard key={c.id} char={c} index={(i + 1).toString().padStart(2, '0')} onClick={() => onSelect(c)} onEdit={() => onEdit(c)} onDelete={() => onDelete(c)} onMemory={() => onMemory(c)} />
           ))}
-          <div onClick={onOpenCreate} className="hover-glitch" style={{ height: 480, border: `1px dashed ${T.border}`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", color: T.faint }}>
+          <div onClick={onOpenCreate} className="hover-glitch" style={{ aspectRatio: "2 / 3", border: `1px dashed ${T.border}`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", color: T.faint }}>
             <Plus size={48} />
             <p style={{ marginTop: 12, fontWeight: 700, letterSpacing: "0.2em", fontSize: 9 }}>NEW_RECORD</p>
           </div>
@@ -294,13 +321,14 @@ function GalleryView({ characters, onSelect, onOpenCreate, onEdit, onDelete, isN
   );
 }
 
-function DossierCard({ char, index, onClick, onEdit, onDelete }: any) {
+function DossierCard({ char, index, onClick, onEdit, onDelete, onMemory }: any) {
   const [hov, setHov] = useState(false);
   return (
-    <div onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)} style={{ position: "relative", height: 480, cursor: "pointer", transition: "0.3s" }}>
+    <div onClick={onClick} onMouseEnter={() => setHov(true)} onMouseLeave={() => setHov(false)} style={{ position: "relative", aspectRatio: "2 / 3", cursor: "pointer", transition: "0.3s" }}>
       <div style={{ position: "absolute", top: -20, left: -5, fontSize: 100, fontWeight: 900, color: hov ? T.accent : T.faint, opacity: 0.1, zIndex: 0, transition: "0.3s" }}>{index}</div>
       <div style={{ position: "relative", width: "100%", height: "100%", background: T.surface, border: `1px solid ${hov ? T.accent : T.border}`, transition: "0.3s", overflow: "hidden", zIndex: 1 }}>
         <div onClick={e => e.stopPropagation()} style={{ position: "absolute", top: 12, right: 12, zIndex: 10, display: "flex", gap: 6, opacity: hov ? 1 : 0, transition: "0.2s", transform: hov ? "none" : "translateY(-10px)" }}>
+          <button onClick={() => onMemory(char)} title="Memória do personagem" style={{ width: 28, height: 28, background: "#000", border: `1px solid ${T.border}`, color: T.accent, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Brain size={12} /></button>
           <button onClick={() => onEdit(char)} style={{ width: 28, height: 28, background: "#000", border: `1px solid ${T.border}`, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Pencil size={12} /></button>
           <button onClick={() => onDelete(char)} style={{ width: 28, height: 28, background: "#000", border: `1px solid ${T.border}`, color: T.red, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}><Trash2 size={12} /></button>
         </div>
